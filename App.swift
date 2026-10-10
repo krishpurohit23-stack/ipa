@@ -2,7 +2,6 @@ import SwiftUI
 import SpriteKit
 import UIKit
 import PhotosUI
-import AVFoundation
 
 // MARK: - Embedded images (base64)
 
@@ -36,17 +35,17 @@ struct RootView: View {
     var body: some View {
         ZStack {
             if screen == .welcome {
-                WelcomeView(onGo: { screen = .photoRun }, onCandy: { screen = .photoMatch }, onShoot: { screen = .photoShoot })
+                WelcomeView(onGo: { screen = .photoRun }, onCandy: { screen = .photoMatch }, onFinger: { screen = .photoShoot })
             } else if screen == .photoRun {
                 PhotoView(onUnlock: { screen = .game })
             } else if screen == .photoMatch {
                 PhotoView(onUnlock: { screen = .match })
             } else if screen == .photoShoot {
                 PhotoView(onUnlock: { screen = .shoot })
-            } else if screen == .shoot {
-                ShootView(onExit: { screen = .welcome })
             } else if screen == .game {
                 GameView(onExit: { screen = .welcome })
+            } else if screen == .shoot {
+                ShootView(onExit: { screen = .welcome })
             } else {
                 MatchView(onExit: { screen = .welcome })
             }
@@ -57,14 +56,15 @@ struct RootView: View {
 struct WelcomeView: View {
     var onGo: () -> Void
     var onCandy: () -> Void
-    var onShoot: () -> Void
+    var onFinger: () -> Void
 
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
             VStack(spacing: 24) {
-                Text("🖕").font(.system(size: 120))
-                    .onTapGesture { onShoot() }
+                Text("🖕")
+                    .font(.system(size: 120))
+                    .onTapGesture(perform: onFinger)
                 Text("i built it lets goo fuck you apple")
                     .font(.title2.bold())
                     .foregroundColor(.white)
@@ -958,7 +958,7 @@ struct MatchView: View {
 
 // MARK: - Match-3 game
 
-enum Special { case none, stripedH, stripedV, bomb }
+enum Special { case none, stripedH, stripedV, wrapped, bomb }
 
 struct Pos: Hashable {
     let c: Int
@@ -1011,18 +1011,17 @@ final class MatchScene: SKScene {
     ]
 
     var score = 0
-    var moves = 25
     var busy = false
     var overShown = false
     var overDate = Date()
     var overlay: SKNode?
     var scoreLabel: SKLabelNode!
-    var movesLabel: SKLabelNode!
     var selected: Pos?
     var selRing: SKShapeNode?
     var startPos: Pos?
     var startPoint = CGPoint.zero
     var didSetup = false
+    var pendingBlasts: [Pos] = []
 
     // MARK: setup
 
@@ -1053,11 +1052,6 @@ final class MatchScene: SKScene {
         scoreLabel.zPosition = 100
         addChild(scoreLabel)
 
-        movesLabel = makeLabel("Moves: 25", 20, UIColor.yellow)
-        movesLabel.position = CGPoint(x: size.width / 2, y: size.height - 132)
-        movesLabel.zPosition = 100
-        addChild(movesLabel)
-
         loadTextures()
         newGame()
     }
@@ -1084,7 +1078,6 @@ final class MatchScene: SKScene {
         selected = nil
         startPos = nil
         score = 0
-        moves = 25
         busy = false
         overShown = false
         fillBoard()
@@ -1094,7 +1087,6 @@ final class MatchScene: SKScene {
 
     func updateHUD() {
         scoreLabel.text = "Score: \(score)"
-        movesLabel.text = "Moves: \(moves)"
     }
 
     func after(_ t: TimeInterval, _ f: @escaping () -> Void) {
@@ -1129,7 +1121,7 @@ final class MatchScene: SKScene {
         let tex: SKTexture
         if special == .bomb {
             tex = bombTex
-        } else if special == .none {
+        } else if special == .none || special == .wrapped {
             tex = faceTex[kind]
         } else {
             tex = stripedTex
@@ -1149,6 +1141,24 @@ final class MatchScene: SKScene {
                 s.position = CGPoint(x: CGFloat(i) * w * 0.28, y: 0)
                 n.addChild(s)
             }
+        } else if special == .wrapped {
+            let gold = UIColor(red: 1.0, green: 0.85, blue: 0.2, alpha: 1)
+            let frame = SKShapeNode(rectOf: CGSize(width: w + 2, height: w + 2), cornerRadius: w * 0.22)
+            frame.strokeColor = gold
+            frame.lineWidth = 5
+            frame.fillColor = UIColor.clear
+            n.addChild(frame)
+            let sides: [CGFloat] = [-1, 1]
+            for sx in sides {
+                let bow = SKShapeNode(circleOfRadius: w * 0.10)
+                bow.fillColor = gold
+                bow.strokeColor = UIColor.white
+                bow.lineWidth = 1
+                bow.position = CGPoint(x: sx * (w / 2 + 1), y: 0)
+                n.addChild(bow)
+            }
+            let pulse = SKAction.sequence([SKAction.scale(to: 1.06, duration: 0.5), SKAction.scale(to: 0.96, duration: 0.5)])
+            n.run(SKAction.repeatForever(pulse))
         } else if special == .bomb {
             let ring = SKShapeNode(circleOfRadius: w * 0.55)
             ring.strokeColor = UIColor.orange
@@ -1319,7 +1329,7 @@ final class MatchScene: SKScene {
     // MARK: swapping
 
     func trySwap(_ a: Pos, _ b: Pos) {
-        if busy || overShown || moves <= 0 { return }
+        if busy || overShown { return }
         guard let ta = grid[a.c][a.r], let tb = grid[b.c][b.r] else { return }
         busy = true
         grid[a.c][a.r] = tb
@@ -1327,30 +1337,10 @@ final class MatchScene: SKScene {
         ta.node.run(SKAction.move(to: pos(b.c, b.r), duration: 0.15))
         tb.node.run(SKAction.move(to: pos(a.c, a.r), duration: 0.15))
         after(0.18) {
-            if ta.special == .bomb || tb.special == .bomb {
-                self.moves -= 1
-                self.updateHUD()
-                var clear = Set<Pos>()
-                clear.insert(a)
-                clear.insert(b)
-                if ta.special == .bomb && tb.special == .bomb {
-                    for c in 0..<self.cols {
-                        for r in 0..<self.rows {
-                            clear.insert(Pos(c: c, r: r))
-                        }
-                    }
-                } else {
-                    let target = (ta.special == .bomb) ? tb.kind : ta.kind
-                    for c in 0..<self.cols {
-                        for r in 0..<self.rows {
-                            if let t = self.grid[c][r], t.kind == target {
-                                clear.insert(Pos(c: c, r: r))
-                            }
-                        }
-                    }
-                }
-                let bp = (ta.special == .bomb) ? b : a
-                self.explosion(at: self.pos(bp.c, bp.r))
+            let sa = ta.special
+            let sb = tb.special
+            if sa == .bomb || sb == .bomb || (sa != .none && sb != .none) {
+                let clear = self.comboSet(ta, tb, a, b)
                 self.executeClear(clear, creations: [:], combo: 1)
                 return
             }
@@ -1363,11 +1353,133 @@ final class MatchScene: SKScene {
                     self.busy = false
                 }
             } else {
-                self.moves -= 1
-                self.updateHUD()
                 self.processMatches(swapA: a, swapB: b, combo: 1)
             }
         }
+    }
+
+    // helpers for special combos
+    func areaCells(_ p: Pos, _ radius: Int) -> [Pos] {
+        var out: [Pos] = []
+        for dc in -radius...radius {
+            for dr in -radius...radius {
+                let c = p.c + dc
+                let r = p.r + dr
+                if c >= 0 && c < cols && r >= 0 && r < rows {
+                    out.append(Pos(c: c, r: r))
+                }
+            }
+        }
+        return out
+    }
+
+    func makeSpecialQuiet(_ t: Tile, _ sp: Special) {
+        let old = t.node
+        let n = makeTileNode(kind: t.kind, special: sp)
+        n.position = old.position
+        n.zPosition = 5
+        board.addChild(n)
+        old.removeFromParent()
+        t.node = n
+        t.special = sp
+    }
+
+    // what gets destroyed when two specials are swapped (ta is now at b, tb is now at a)
+    func comboSet(_ ta: Tile, _ tb: Tile, _ a: Pos, _ b: Pos) -> Set<Pos> {
+        var clear = Set<Pos>()
+        clear.insert(a)
+        clear.insert(b)
+        let sa = ta.special
+        let sb = tb.special
+        let aStriped = (sa == .stripedH || sa == .stripedV)
+        let bStriped = (sb == .stripedH || sb == .stripedV)
+
+        if sa == .bomb || sb == .bomb {
+            let bombPos = (sa == .bomb) ? b : a
+            explosion(at: pos(bombPos.c, bombPos.r))
+            if sa == .bomb && sb == .bomb {
+                // bomb + bomb: whole board
+                for c in 0..<cols {
+                    for r in 0..<rows {
+                        clear.insert(Pos(c: c, r: r))
+                    }
+                }
+                return clear
+            }
+            let other = (sa == .bomb) ? tb : ta
+            var kinds = Set<Int>()
+            kinds.insert(other.kind)
+            if other.special == .wrapped {
+                // bomb + wrapped: that color and one more random color
+                var k2 = Int.random(in: 0..<6)
+                var tries = 0
+                while k2 == other.kind && tries < 20 {
+                    k2 = Int.random(in: 0..<6)
+                    tries += 1
+                }
+                kinds.insert(k2)
+            }
+            let makeStriped = (other.special == .stripedH || other.special == .stripedV)
+            for c in 0..<cols {
+                for r in 0..<rows {
+                    if let t = grid[c][r], kinds.contains(t.kind) {
+                        if makeStriped && t.special == .none {
+                            makeSpecialQuiet(t, Bool.random() ? .stripedH : .stripedV)
+                        }
+                        clear.insert(Pos(c: c, r: r))
+                    }
+                }
+            }
+            return clear
+        }
+
+        if aStriped && bStriped {
+            // striped + striped: a row and a column
+            for c in 0..<cols { clear.insert(Pos(c: c, r: b.r)) }
+            for r in 0..<rows { clear.insert(Pos(c: b.c, r: r)) }
+            lineFlash(horizontal: true, b)
+            lineFlash(horizontal: false, b)
+            return clear
+        }
+
+        if sa == .wrapped && sb == .wrapped {
+            // wrapped + wrapped: big 5x5 blast
+            for q in areaCells(b, 2) { clear.insert(q) }
+            blastFlash(b)
+            return clear
+        }
+
+        // striped + wrapped: 3 rows and 3 columns
+        for dr in -1...1 {
+            let rr = b.r + dr
+            if rr >= 0 && rr < rows {
+                for c in 0..<cols { clear.insert(Pos(c: c, r: rr)) }
+            }
+        }
+        for dc in -1...1 {
+            let cc = b.c + dc
+            if cc >= 0 && cc < cols {
+                for r in 0..<rows { clear.insert(Pos(c: cc, r: r)) }
+            }
+        }
+        lineFlash(horizontal: true, b)
+        lineFlash(horizontal: false, b)
+        return clear
+    }
+
+    func blastFlash(_ p: Pos) {
+        let s = SKShapeNode(rectOf: CGSize(width: cell * 3, height: cell * 3), cornerRadius: 12)
+        s.position = pos(p.c, p.r)
+        s.fillColor = UIColor(red: 1.0, green: 0.9, blue: 0.4, alpha: 0.7)
+        s.strokeColor = UIColor.white
+        s.lineWidth = 3
+        s.zPosition = 55
+        board.addChild(s)
+        s.run(SKAction.sequence([
+            SKAction.group([SKAction.scale(to: 1.3, duration: 0.3), SKAction.fadeOut(withDuration: 0.3)]),
+            SKAction.removeFromParent()
+        ]))
+        burst(at: pos(p.c, p.r), color: UIColor.orange, count: 10, dist: 80)
     }
 
     func processMatches(swapA: Pos?, swapB: Pos?, combo: Int) {
@@ -1393,6 +1505,16 @@ final class MatchScene: SKScene {
                 }
             }
         }
+        // L, T and + shapes: a horizontal and a vertical run crossing -> wrapped candy
+        for h in runs where h.horizontal {
+            for v in runs where !v.horizontal {
+                for p in h.cells where v.cells.contains(p) {
+                    if creations[p] != .bomb {
+                        creations[p] = .wrapped
+                    }
+                }
+            }
+        }
         for (p, _) in creations {
             clear.remove(p)
         }
@@ -1414,6 +1536,10 @@ final class MatchScene: SKScene {
             } else if t.special == .stripedV {
                 lineFlash(horizontal: false, p)
                 for r in 0..<rows { extra.append(Pos(c: p.c, r: r)) }
+            } else if t.special == .wrapped {
+                blastFlash(p)
+                pendingBlasts.append(p)
+                extra.append(contentsOf: areaCells(p, 1))
             }
             for e in extra {
                 if !clear.contains(e) && creations[e] == nil {
@@ -1446,7 +1572,19 @@ final class MatchScene: SKScene {
         after(0.32) {
             let d = self.collapseAndRefill()
             self.after(d + 0.05) {
-                self.processMatches(swapA: nil, swapB: nil, combo: combo + 1)
+                if !self.pendingBlasts.isEmpty {
+                    // wrapped candies explode a second time after the candies fall
+                    let blasts = self.pendingBlasts
+                    self.pendingBlasts.removeAll()
+                    var set = Set<Pos>()
+                    for bp in blasts {
+                        self.blastFlash(bp)
+                        for q in self.areaCells(bp, 1) { set.insert(q) }
+                    }
+                    self.executeClear(set, creations: [:], combo: combo + 1)
+                } else {
+                    self.processMatches(swapA: nil, swapB: nil, combo: combo + 1)
+                }
             }
         }
     }
@@ -1507,10 +1645,6 @@ final class MatchScene: SKScene {
 
     func finishTurn() {
         board.position = CGPoint.zero
-        if moves <= 0 {
-            showGameOver()
-            return
-        }
         if !hasPossibleMove() {
             fillBoard()
             showToast("No moves left - shuffled!")
@@ -1581,6 +1715,18 @@ final class MatchScene: SKScene {
         board.addChild(boom)
         boom.run(SKAction.sequence([
             SKAction.group([SKAction.scale(to: 3.0, duration: 0.4), SKAction.fadeOut(withDuration: 0.4)]),
+            SKAction.removeFromParent()
+        ]))
+
+        let boomText = makeLabel("BOOM!", 52, UIColor.yellow)
+        boomText.position = CGPoint(x: size.width / 2, y: size.height * 0.78)
+        boomText.zPosition = 80
+        boomText.setScale(0.4)
+        addChild(boomText)
+        boomText.run(SKAction.sequence([
+            SKAction.scale(to: 1.2, duration: 0.2),
+            SKAction.wait(forDuration: 0.5),
+            SKAction.fadeOut(withDuration: 0.3),
             SKAction.removeFromParent()
         ]))
 
@@ -1713,654 +1859,251 @@ final class MatchScene: SKScene {
     }
 }
 
-// MARK: - ============ DEAD SHOT : RDR2-style shooting range ============
-// Real ballistics: bullet travel time, drag, gravity drop, wind drift, weapon sway,
-// breath holding, recoil kick, Dead Eye slow-mo + mark & execute.
+// MARK: - Western shooting gallery
 
-func shc(_ r: CGFloat, _ g: CGFloat, _ b: CGFloat, _ a: CGFloat = 1) -> UIColor {
-    return UIColor(red: r, green: g, blue: b, alpha: a)
+func pt(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+    return CGPoint(x: x, y: y)
 }
 
-// MARK: Synth sound effects (no audio files needed)
-
-final class ShSFX {
-    static let shared = ShSFX()
-    private let engine = AVAudioEngine()
-    private var players: [AVAudioPlayerNode] = []
-    private var idx = 0
-    private var ready = false
-    private let bShot: AVAudioPCMBuffer
-    private let bGlass: AVAudioPCMBuffer
-    private let bPing: AVAudioPCMBuffer
-    private let bThud: AVAudioPCMBuffer
-    private let bClick: AVAudioPCMBuffer
-    private let bDirt: AVAudioPCMBuffer
-
-    private static func make(_ fmt: AVAudioFormat, _ dur: Double, _ gen: (Double) -> Float) -> AVAudioPCMBuffer {
-        let n = AVAudioFrameCount(dur * fmt.sampleRate)
-        let b = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: n)!
-        b.frameLength = n
-        let p = b.floatChannelData![0]
-        for i in 0..<Int(n) {
-            let v = gen(Double(i) / fmt.sampleRate)
-            p[i] = max(-1, min(1, v))
-        }
-        return b
+func poly(_ pts: [CGPoint], _ fill: UIColor, _ stroke: UIColor? = nil, _ lw: CGFloat = 1) -> SKShapeNode {
+    let p = CGMutablePath()
+    p.move(to: pts[0])
+    for i in 1..<pts.count {
+        p.addLine(to: pts[i])
     }
-
-    private init() {
-        let fmt = AVAudioFormat(standardFormatWithSampleRate: 44100, channels: 1)!
-        let twoPi = 2.0 * Double.pi
-
-        var lp: Float = 0
-        bShot = ShSFX.make(fmt, 1.2) { t in
-            let n = Float.random(in: -1...1)
-            lp += (n - lp) * 0.16
-            let crack = n * Float(exp(-t * 90)) * 0.7
-            let boom = lp * Float(exp(-t * 7)) * 1.7
-            let thump = Float(sin(twoPi * 60 * t)) * Float(exp(-t * 15)) * 0.9
-            let tail = lp * Float(exp(-t * 3.0)) * 0.55
-            return crack + boom + thump + tail
-        }
-
-        var prev: Float = 0
-        bGlass = ShSFX.make(fmt, 0.5) { t in
-            let n = Float.random(in: -1...1)
-            let h = n - prev
-            prev = n
-            let env = Float(exp(-t * 10))
-            let fm: Double = 2800 + 900 * sin(t * 60)
-            let tone = Float(sin(twoPi * fm * t))
-            let tink = tone * Float(exp(-t * 24)) * 0.25
-            return h * 0.5 * env + tink
-        }
-
-        bPing = ShSFX.make(fmt, 0.7) { t in
-            let a = Float(sin(twoPi * 1650 * t)) * Float(exp(-t * 7)) * 0.5
-            let b = Float(sin(twoPi * 2480 * t)) * Float(exp(-t * 9)) * 0.3
-            return a + b
-        }
-
-        bThud = ShSFX.make(fmt, 0.4) { t in
-            let a = Float(sin(twoPi * 180 * t)) * Float(exp(-t * 22)) * 0.8
-            let n = Float.random(in: -1...1) * Float(exp(-t * 70)) * 0.4
-            let r = Float(sin(twoPi * 900 * t)) * Float(exp(-t * 14)) * 0.2
-            return a + n + r
-        }
-
-        bClick = ShSFX.make(fmt, 0.06) { t in
-            return Float.random(in: -1...1) * Float(exp(-t * 260)) * 0.7
-        }
-
-        var lp2: Float = 0
-        bDirt = ShSFX.make(fmt, 0.2) { t in
-            let n = Float.random(in: -1...1)
-            lp2 += (n - lp2) * 0.2
-            return lp2 * Float(exp(-t * 28)) * 0.9
-        }
-
-        let session = AVAudioSession.sharedInstance()
-        try? session.setCategory(.ambient, options: [.mixWithOthers])
-        try? session.setActive(true)
-        for _ in 0..<6 {
-            let p = AVAudioPlayerNode()
-            engine.attach(p)
-            engine.connect(p, to: engine.mainMixerNode, format: fmt)
-            players.append(p)
-        }
-        do {
-            try engine.start()
-            ready = true
-        } catch {
-            ready = false
-        }
+    p.closeSubpath()
+    let n = SKShapeNode(path: p)
+    n.fillColor = fill
+    if let s = stroke {
+        n.strokeColor = s
+        n.lineWidth = lw
+    } else {
+        n.strokeColor = UIColor.clear
     }
-
-    private func play(_ b: AVAudioPCMBuffer, _ vol: Float) {
-        guard ready else { return }
-        if !engine.isRunning { try? engine.start() }
-        let p = players[idx]
-        idx = (idx + 1) % players.count
-        p.volume = vol
-        p.scheduleBuffer(b, at: nil, options: .interrupts, completionHandler: nil)
-        if !p.isPlaying { p.play() }
-    }
-
-    func shot() { play(bShot, 1.0) }
-    func glass(_ v: Float = 0.8) { play(bGlass, v) }
-    func ping(_ v: Float = 0.8) { play(bPing, v) }
-    func thud(_ v: Float = 0.8) { play(bThud, v) }
-    func click() { play(bClick, 0.8) }
-    func dirt(_ v: Float = 0.6) { play(bDirt, v) }
+    return n
 }
 
-// MARK: Procedural art (all graphics drawn in code)
+func lineNode(_ a: CGPoint, _ b: CGPoint, _ c: UIColor, _ w: CGFloat) -> SKShapeNode {
+    let p = CGMutablePath()
+    p.move(to: a)
+    p.addLine(to: b)
+    let n = SKShapeNode(path: p)
+    n.strokeColor = c
+    n.lineWidth = w
+    return n
+}
 
-enum ShArt {
-    static func img(_ size: CGSize, scale: CGFloat = 3, _ draw: (CGContext) -> Void) -> UIImage {
-        let f = UIGraphicsImageRendererFormat()
-        f.scale = scale
-        f.opaque = false
-        return UIGraphicsImageRenderer(size: size, format: f).image { draw($0.cgContext) }
+func starPoints(_ c: CGPoint, _ rOut: CGFloat, _ rIn: CGFloat) -> [CGPoint] {
+    var out: [CGPoint] = []
+    for i in 0..<10 {
+        let ang = CGFloat.pi / 2 + CGFloat(i) * CGFloat.pi / 5
+        let r = (i % 2 == 0) ? rOut : rIn
+        out.append(CGPoint(x: c.x + cos(ang) * r, y: c.y + sin(ang) * r))
     }
+    return out
+}
 
-    static func lin(_ c: CGContext, _ cols: [UIColor], _ locs: [CGFloat], _ a: CGPoint, _ b: CGPoint) {
-        guard let g = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(),
-                                 colors: cols.map { $0.cgColor } as CFArray,
-                                 locations: locs) else { return }
-        c.drawLinearGradient(g, start: a, end: b, options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
-    }
+func westernLabel(_ text: String, _ fs: CGFloat, _ color: UIColor) -> SKLabelNode {
+    let l = SKLabelNode(fontNamed: "Copperplate-Bold")
+    l.text = text
+    l.fontSize = fs
+    l.fontColor = color
+    return l
+}
 
-    static func rad(_ c: CGContext, _ cols: [UIColor], _ locs: [CGFloat], _ center: CGPoint, _ r0: CGFloat, _ r1: CGFloat) {
-        guard let g = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(),
-                                 colors: cols.map { $0.cgColor } as CFArray,
-                                 locations: locs) else { return }
-        c.drawRadialGradient(g, startCenter: center, startRadius: r0, endCenter: center, endRadius: r1,
-                             options: [.drawsAfterEndLocation])
-    }
-
-    static let soft: SKTexture = {
-        let im = ShArt.img(CGSize(width: 128, height: 128), scale: 1) { c in
-            ShArt.rad(c, [shc(1, 1, 1, 1), shc(1, 1, 1, 0.5), shc(1, 1, 1, 0)], [0, 0.4, 1],
-                CGPoint(x: 64, y: 64), 0, 64)
+func gradientImage(_ size: CGSize, _ colors: [UIColor], _ locs: [CGFloat]) -> UIImage {
+    let f = UIGraphicsImageRendererFormat.default()
+    f.scale = 1
+    let r = UIGraphicsImageRenderer(size: size, format: f)
+    return r.image { ctx in
+        let cs = CGColorSpaceCreateDeviceRGB()
+        let cg = colors.map { $0.cgColor } as CFArray
+        if let g = CGGradient(colorsSpace: cs, colors: cg, locations: locs) {
+            ctx.cgContext.drawLinearGradient(g, start: CGPoint(x: 0, y: 0), end: CGPoint(x: 0, y: size.height), options: [])
         }
-        return SKTexture(image: im)
-    }()
-
-    static let shard: SKTexture = {
-        let im = ShArt.img(CGSize(width: 16, height: 16), scale: 2) { c in
-            let p = UIBezierPath()
-            p.move(to: CGPoint(x: 8, y: 1))
-            p.addLine(to: CGPoint(x: 15, y: 14))
-            p.addLine(to: CGPoint(x: 2, y: 11))
-            p.close()
-            shc(1, 1, 1).setFill()
-            p.fill()
-        }
-        return SKTexture(image: im)
-    }()
-
-    static let flash: SKTexture = {
-        let im = ShArt.img(CGSize(width: 200, height: 200), scale: 2) { c in
-            let ctr = CGPoint(x: 100, y: 100)
-            let star = UIBezierPath()
-            let n = 12
-            for i in 0..<(n * 2) {
-                let ang = CGFloat(i) * CGFloat.pi / CGFloat(n)
-                var r: CGFloat = 18
-                if i % 2 == 0 { r = (i % 4 == 0) ? 98 : 68 }
-                let p = CGPoint(x: ctr.x + cos(ang) * r, y: ctr.y + sin(ang) * r)
-                if i == 0 { star.move(to: p) } else { star.addLine(to: p) }
-            }
-            star.close()
-            c.saveGState()
-            star.addClip()
-            ShArt.rad(c, [shc(1, 1, 0.85, 1), shc(1, 0.75, 0.2, 0.95), shc(1, 0.35, 0, 0)], [0, 0.35, 1], ctr, 0, 98)
-            c.restoreGState()
-        }
-        return SKTexture(image: im)
-    }()
-
-    static let bottle: SKTexture = {
-        let im = ShArt.img(CGSize(width: 40, height: 112)) { c in
-            let p = UIBezierPath()
-            p.move(to: CGPoint(x: 15, y: 2))
-            p.addLine(to: CGPoint(x: 25, y: 2))
-            p.addLine(to: CGPoint(x: 25, y: 9))
-            p.addLine(to: CGPoint(x: 23.5, y: 12))
-            p.addLine(to: CGPoint(x: 23.5, y: 40))
-            p.addCurve(to: CGPoint(x: 35, y: 62), controlPoint1: CGPoint(x: 23.5, y: 50), controlPoint2: CGPoint(x: 35, y: 52))
-            p.addLine(to: CGPoint(x: 35, y: 104))
-            p.addQuadCurve(to: CGPoint(x: 31, y: 109), controlPoint: CGPoint(x: 35, y: 109))
-            p.addLine(to: CGPoint(x: 9, y: 109))
-            p.addQuadCurve(to: CGPoint(x: 5, y: 104), controlPoint: CGPoint(x: 5, y: 109))
-            p.addLine(to: CGPoint(x: 5, y: 62))
-            p.addCurve(to: CGPoint(x: 16.5, y: 40), controlPoint1: CGPoint(x: 5, y: 52), controlPoint2: CGPoint(x: 16.5, y: 50))
-            p.addLine(to: CGPoint(x: 16.5, y: 12))
-            p.addLine(to: CGPoint(x: 15, y: 9))
-            p.close()
-            c.saveGState()
-            p.addClip()
-            ShArt.lin(c, [shc(0.04, 0.22, 0.09, 0.95), shc(0.22, 0.62, 0.3, 0.9), shc(0.03, 0.18, 0.08, 0.95)],
-                [0, 0.4, 1], CGPoint(x: 5, y: 0), CGPoint(x: 35, y: 0))
-            shc(0.93, 0.86, 0.68).setFill()
-            c.fill(CGRect(x: 5, y: 72, width: 30, height: 24))
-            shc(0.7, 0.12, 0.1).setFill()
-            c.fill(CGRect(x: 5, y: 78, width: 30, height: 5))
-            shc(1, 1, 1, 0.45).setFill()
-            c.fill(CGRect(x: 9, y: 64, width: 3, height: 36))
-            c.fill(CGRect(x: 18.5, y: 14, width: 2, height: 24))
-            c.restoreGState()
-            shc(0, 0, 0, 0.5).setStroke()
-            p.lineWidth = 0.8
-            p.stroke()
-        }
-        return SKTexture(image: im)
-    }()
-
-    static let can: SKTexture = {
-        let im = ShArt.img(CGSize(width: 36, height: 50)) { c in
-            shc(0.35, 0.36, 0.4).setFill()
-            UIBezierPath(ovalIn: CGRect(x: 4, y: 40, width: 28, height: 8)).fill()
-            let body = UIBezierPath(rect: CGRect(x: 4, y: 8, width: 28, height: 36))
-            c.saveGState()
-            body.addClip()
-            ShArt.lin(c, [shc(0.45, 0.46, 0.5), shc(0.92, 0.93, 0.95), shc(0.4, 0.41, 0.45)],
-                [0, 0.35, 1], CGPoint(x: 4, y: 0), CGPoint(x: 32, y: 0))
-            ShArt.lin(c, [shc(0.75, 0.2, 0.1, 0.95), shc(0.95, 0.4, 0.2, 0.95), shc(0.6, 0.15, 0.08, 0.95)],
-                [0, 0.4, 1], CGPoint(x: 4, y: 0), CGPoint(x: 32, y: 0))
-            c.restoreGState()
-            // label stripes (redraw metal band top & bottom over label)
-            c.saveGState()
-            body.addClip()
-            ShArt.lin(c, [shc(0.45, 0.46, 0.5), shc(0.92, 0.93, 0.95), shc(0.4, 0.41, 0.45)],
-                [0, 0.35, 1], CGPoint(x: 4, y: 0), CGPoint(x: 32, y: 0))
-            c.restoreGState()
-            c.saveGState()
-            UIBezierPath(rect: CGRect(x: 4, y: 16, width: 28, height: 20)).addClip()
-            ShArt.lin(c, [shc(0.7, 0.18, 0.1), shc(0.98, 0.45, 0.2), shc(0.55, 0.12, 0.07)],
-                [0, 0.4, 1], CGPoint(x: 4, y: 0), CGPoint(x: 32, y: 0))
-            shc(1, 0.9, 0.5).setFill()
-            c.fill(CGRect(x: 4, y: 24, width: 28, height: 4))
-            c.restoreGState()
-            shc(0.8, 0.82, 0.86).setFill()
-            UIBezierPath(ovalIn: CGRect(x: 4, y: 4, width: 28, height: 8)).fill()
-            shc(0.3, 0.3, 0.33).setStroke()
-            let rim = UIBezierPath(ovalIn: CGRect(x: 4, y: 4, width: 28, height: 8))
-            rim.lineWidth = 0.8
-            rim.stroke()
-        }
-        return SKTexture(image: im)
-    }()
-
-    static let plate: SKTexture = {
-        let im = ShArt.img(CGSize(width: 64, height: 64)) { c in
-            let ctr = CGPoint(x: 32, y: 32)
-            let rings: [(CGFloat, UIColor)] = [
-                (30, shc(0.55, 0.57, 0.62)),
-                (26, shc(0.95, 0.95, 0.93)),
-                (19, shc(0.82, 0.14, 0.1)),
-                (12, shc(0.95, 0.95, 0.93)),
-                (6, shc(0.82, 0.14, 0.1))
-            ]
-            for (r, col) in rings {
-                col.setFill()
-                UIBezierPath(ovalIn: CGRect(x: ctr.x - r, y: ctr.y - r, width: r * 2, height: r * 2)).fill()
-            }
-            shc(0, 0, 0, 0.45).setStroke()
-            let o = UIBezierPath(ovalIn: CGRect(x: 2, y: 2, width: 60, height: 60))
-            o.lineWidth = 1.2
-            o.stroke()
-            ShArt.rad(c, [shc(1, 1, 1, 0.35), shc(1, 1, 1, 0)], [0, 1], CGPoint(x: 22, y: 20), 0, 26)
-        }
-        return SKTexture(image: im)
-    }()
-
-    static let clay: SKTexture = {
-        let im = ShArt.img(CGSize(width: 60, height: 26)) { c in
-            let body = UIBezierPath(ovalIn: CGRect(x: 2, y: 3, width: 56, height: 20))
-            c.saveGState()
-            body.addClip()
-            ShArt.lin(c, [shc(1, 0.6, 0.2), shc(0.9, 0.35, 0.08), shc(0.6, 0.2, 0.05)], [0, 0.5, 1],
-                CGPoint(x: 0, y: 3), CGPoint(x: 0, y: 23))
-            c.restoreGState()
-            shc(1, 0.8, 0.5, 0.8).setFill()
-            UIBezierPath(ovalIn: CGRect(x: 14, y: 6, width: 32, height: 9)).fill()
-            shc(0.45, 0.15, 0.03).setStroke()
-            body.lineWidth = 1
-            body.stroke()
-        }
-        return SKTexture(image: im)
-    }()
-
-    static let cartridge: SKTexture = {
-        let im = ShArt.img(CGSize(width: 10, height: 30)) { c in
-            let casing = UIBezierPath(roundedRect: CGRect(x: 1, y: 11, width: 8, height: 18), cornerRadius: 1.5)
-            c.saveGState()
-            casing.addClip()
-            ShArt.lin(c, [shc(0.7, 0.5, 0.15), shc(1, 0.88, 0.45), shc(0.6, 0.4, 0.1)], [0, 0.4, 1],
-                CGPoint(x: 1, y: 0), CGPoint(x: 9, y: 0))
-            c.restoreGState()
-            let tip = UIBezierPath(roundedRect: CGRect(x: 1.5, y: 1, width: 7, height: 13), cornerRadius: 3.5)
-            c.saveGState()
-            tip.addClip()
-            ShArt.lin(c, [shc(0.4, 0.38, 0.38), shc(0.75, 0.72, 0.7), shc(0.35, 0.33, 0.33)], [0, 0.4, 1],
-                CGPoint(x: 1.5, y: 0), CGPoint(x: 8.5, y: 0))
-            c.restoreGState()
-        }
-        return SKTexture(image: im)
-    }()
-
-    static let cactus: SKTexture = {
-        let im = ShArt.img(CGSize(width: 60, height: 120)) { c in
-            let green1 = shc(0.14, 0.38, 0.17)
-            let green2 = shc(0.3, 0.58, 0.28)
-            let parts: [UIBezierPath] = [
-                UIBezierPath(roundedRect: CGRect(x: 22, y: 6, width: 16, height: 112), cornerRadius: 8),
-                UIBezierPath(roundedRect: CGRect(x: 4, y: 60, width: 22, height: 9), cornerRadius: 4.5),
-                UIBezierPath(roundedRect: CGRect(x: 4, y: 34, width: 10, height: 35), cornerRadius: 5),
-                UIBezierPath(roundedRect: CGRect(x: 34, y: 72, width: 22, height: 9), cornerRadius: 4.5),
-                UIBezierPath(roundedRect: CGRect(x: 46, y: 46, width: 10, height: 35), cornerRadius: 5)
-            ]
-            for p in parts {
-                c.saveGState()
-                p.addClip()
-                ShArt.lin(c, [green1, green2, green1], [0, 0.4, 1], CGPoint(x: 0, y: 0), CGPoint(x: 60, y: 0))
-                c.restoreGState()
-            }
-            shc(0, 0.1, 0, 0.35).setStroke()
-            for x in [27.0, 30.0, 33.0] {
-                let l = UIBezierPath()
-                l.move(to: CGPoint(x: x, y: 10))
-                l.addLine(to: CGPoint(x: x, y: 114))
-                l.lineWidth = 0.7
-                l.stroke()
-            }
-        }
-        return SKTexture(image: im)
-    }()
-
-    static let tuft: SKTexture = {
-        let im = ShArt.img(CGSize(width: 28, height: 16), scale: 2) { c in
-            shc(0.45, 0.4, 0.2, 0.9).setStroke()
-            for i in 0..<9 {
-                let x = 4 + CGFloat(i) * 2.5
-                let p = UIBezierPath()
-                p.move(to: CGPoint(x: x, y: 16))
-                p.addQuadCurve(to: CGPoint(x: x + CGFloat.random(in: -6...6), y: CGFloat.random(in: 1...8)),
-                               controlPoint: CGPoint(x: x, y: 8))
-                p.lineWidth = 1
-                p.stroke()
-            }
-        }
-        return SKTexture(image: im)
-    }()
-
-    static let rock: SKTexture = {
-        let im = ShArt.img(CGSize(width: 40, height: 22), scale: 2) { c in
-            let p = UIBezierPath(ovalIn: CGRect(x: 1, y: 3, width: 38, height: 18))
-            c.saveGState()
-            p.addClip()
-            ShArt.lin(c, [shc(0.7, 0.62, 0.55), shc(0.4, 0.33, 0.28)], [0, 1], CGPoint(x: 0, y: 3), CGPoint(x: 0, y: 21))
-            c.restoreGState()
-        }
-        return SKTexture(image: im)
-    }()
-
-    static let vignette: SKTexture = {
-        let im = ShArt.img(CGSize(width: 256, height: 256), scale: 1) { c in
-            ShArt.rad(c, [shc(0, 0, 0, 0), shc(0, 0, 0, 0), shc(0, 0, 0, 0.62)], [0, 0.5, 1],
-                CGPoint(x: 128, y: 128), 0, 182)
-        }
-        return SKTexture(image: im)
-    }()
-
-    static let cylinder: SKTexture = {
-        let im = ShArt.img(CGSize(width: 88, height: 88)) { c in
-            let ctr = CGPoint(x: 44, y: 44)
-            c.saveGState()
-            UIBezierPath(ovalIn: CGRect(x: 0, y: 0, width: 88, height: 88)).addClip()
-            ShArt.rad(c, [shc(0.55, 0.57, 0.62), shc(0.26, 0.27, 0.31), shc(0.07, 0.07, 0.09)], [0, 0.7, 1], ctr, 0, 44)
-            c.restoreGState()
-            for i in 0..<6 {
-                let a = CGFloat(i) * CGFloat.pi / 3
-                let p = CGPoint(x: ctr.x + cos(a) * 27, y: ctr.y + sin(a) * 27)
-                shc(0.02, 0.02, 0.03).setFill()
-                UIBezierPath(ovalIn: CGRect(x: p.x - 10, y: p.y - 10, width: 20, height: 20)).fill()
-                c.saveGState()
-                UIBezierPath(ovalIn: CGRect(x: p.x - 8, y: p.y - 8, width: 16, height: 16)).addClip()
-                ShArt.rad(c, [shc(1, 0.92, 0.55), shc(0.78, 0.52, 0.16), shc(0.5, 0.32, 0.08)], [0, 0.6, 1], p, 0, 8)
-                c.restoreGState()
-                shc(0.45, 0.28, 0.07).setFill()
-                UIBezierPath(ovalIn: CGRect(x: p.x - 2.5, y: p.y - 2.5, width: 5, height: 5)).fill()
-            }
-            shc(0.2, 0.2, 0.24).setFill()
-            UIBezierPath(ovalIn: CGRect(x: ctr.x - 6, y: ctr.y - 6, width: 12, height: 12)).fill()
-            shc(1, 1, 1, 0.15).setStroke()
-            let o = UIBezierPath(ovalIn: CGRect(x: 1, y: 1, width: 86, height: 86))
-            o.lineWidth = 1.2
-            o.stroke()
-        }
-        return SKTexture(image: im)
-    }()
-
-    // Revolver seen from behind (first person)
-    static let gunBody: SKTexture = {
-        let im = ShArt.img(CGSize(width: 240, height: 360)) { c in
-            // barrel
-            let barrel = UIBezierPath()
-            barrel.move(to: CGPoint(x: 111, y: 14))
-            barrel.addLine(to: CGPoint(x: 129, y: 14))
-            barrel.addLine(to: CGPoint(x: 146, y: 172))
-            barrel.addLine(to: CGPoint(x: 94, y: 172))
-            barrel.close()
-            c.saveGState()
-            barrel.addClip()
-            ShArt.lin(c, [shc(0.05, 0.06, 0.07), shc(0.38, 0.4, 0.45), shc(0.07, 0.08, 0.09)], [0, 0.45, 1],
-                CGPoint(x: 94, y: 0), CGPoint(x: 146, y: 0))
-            c.restoreGState()
-            shc(1, 1, 1, 0.28).setStroke()
-            let rib = UIBezierPath()
-            rib.move(to: CGPoint(x: 120, y: 14))
-            rib.addLine(to: CGPoint(x: 120, y: 172))
-            rib.lineWidth = 1.6
-            rib.stroke()
-            shc(0.1, 0.1, 0.12).setFill()
-            UIBezierPath(ovalIn: CGRect(x: 108, y: 8, width: 24, height: 12)).fill()
-            shc(0, 0, 0).setFill()
-            UIBezierPath(ovalIn: CGRect(x: 115, y: 11, width: 10, height: 6)).fill()
-            shc(0.6, 0.62, 0.66).setFill()
-            UIBezierPath(roundedRect: CGRect(x: 117.5, y: 2, width: 5, height: 11), cornerRadius: 1.5).fill()
-
-            // frame
-            let frame = UIBezierPath(roundedRect: CGRect(x: 58, y: 166, width: 124, height: 100), cornerRadius: 20)
-            c.saveGState()
-            frame.addClip()
-            ShArt.lin(c, [shc(0.06, 0.07, 0.09), shc(0.32, 0.34, 0.39), shc(0.06, 0.07, 0.09)], [0, 0.5, 1],
-                CGPoint(x: 58, y: 0), CGPoint(x: 182, y: 0))
-            c.restoreGState()
-            shc(1, 1, 1, 0.14).setStroke()
-            frame.lineWidth = 1.2
-            frame.stroke()
-
-            // top strap + rear sight
-            let strap = UIBezierPath(roundedRect: CGRect(x: 92, y: 150, width: 56, height: 24), cornerRadius: 6)
-            c.saveGState()
-            strap.addClip()
-            ShArt.lin(c, [shc(0.1, 0.11, 0.13), shc(0.5, 0.52, 0.57), shc(0.1, 0.11, 0.13)], [0, 0.5, 1],
-                CGPoint(x: 92, y: 0), CGPoint(x: 148, y: 0))
-            c.restoreGState()
-
-            // hammer
-            let hammer = UIBezierPath()
-            hammer.move(to: CGPoint(x: 112, y: 170))
-            hammer.addLine(to: CGPoint(x: 108, y: 134))
-            hammer.addQuadCurve(to: CGPoint(x: 132, y: 134), controlPoint: CGPoint(x: 120, y: 122))
-            hammer.addLine(to: CGPoint(x: 128, y: 170))
-            hammer.close()
-            c.saveGState()
-            hammer.addClip()
-            ShArt.lin(c, [shc(0.15, 0.16, 0.19), shc(0.62, 0.64, 0.68), shc(0.15, 0.16, 0.19)], [0, 0.5, 1],
-                CGPoint(x: 108, y: 0), CGPoint(x: 132, y: 0))
-            shc(0, 0, 0, 0.4).setStroke()
-            for i in 0..<5 {
-                let l = UIBezierPath()
-                l.move(to: CGPoint(x: 106, y: 130 + CGFloat(i) * 4))
-                l.addLine(to: CGPoint(x: 134, y: 130 + CGFloat(i) * 4))
-                l.lineWidth = 0.9
-                l.stroke()
-            }
-            c.restoreGState()
-
-            // cylinder window
-            shc(0.02, 0.02, 0.03).setFill()
-            UIBezierPath(roundedRect: CGRect(x: 70, y: 172, width: 100, height: 92), cornerRadius: 12).fill()
-
-            // trigger guard
-            shc(0.1, 0.1, 0.12).setStroke()
-            let tg = UIBezierPath(ovalIn: CGRect(x: 86, y: 252, width: 52, height: 50))
-            tg.lineWidth = 5
-            tg.stroke()
-
-            // wooden grip
-            let grip = UIBezierPath()
-            grip.move(to: CGPoint(x: 84, y: 258))
-            grip.addLine(to: CGPoint(x: 156, y: 258))
-            grip.addLine(to: CGPoint(x: 172, y: 360))
-            grip.addLine(to: CGPoint(x: 64, y: 360))
-            grip.close()
-            c.saveGState()
-            grip.addClip()
-            ShArt.lin(c, [shc(0.26, 0.12, 0.05), shc(0.56, 0.32, 0.14), shc(0.22, 0.1, 0.04)], [0, 0.5, 1],
-                CGPoint(x: 64, y: 0), CGPoint(x: 172, y: 0))
-            shc(0.1, 0.04, 0.01, 0.25).setStroke()
-            for i in 0..<10 {
-                let gx = 70 + CGFloat(i) * 10
-                let g = UIBezierPath()
-                g.move(to: CGPoint(x: gx, y: 258))
-                g.addCurve(to: CGPoint(x: gx + 6, y: 360),
-                           controlPoint1: CGPoint(x: gx + 8, y: 290),
-                           controlPoint2: CGPoint(x: gx - 6, y: 320))
-                g.lineWidth = 0.9
-                g.stroke()
-            }
-            c.restoreGState()
-
-            // leather glove
-            let glove = UIBezierPath(roundedRect: CGRect(x: 54, y: 294, width: 132, height: 80), cornerRadius: 32)
-            c.saveGState()
-            glove.addClip()
-            ShArt.lin(c, [shc(0.14, 0.08, 0.05), shc(0.36, 0.22, 0.12), shc(0.12, 0.07, 0.04)], [0, 0.5, 1],
-                CGPoint(x: 54, y: 0), CGPoint(x: 186, y: 0))
-            shc(0, 0, 0, 0.35).setStroke()
-            for i in 1..<4 {
-                let l = UIBezierPath()
-                let lx = 54 + CGFloat(i) * 33
-                l.move(to: CGPoint(x: lx, y: 296))
-                l.addLine(to: CGPoint(x: lx, y: 340))
-                l.lineWidth = 1.4
-                l.stroke()
-            }
-            c.restoreGState()
-
-            // thumb
-            c.saveGState()
-            c.translateBy(x: 74, y: 270)
-            c.rotate(by: 0.28)
-            let thumb = UIBezierPath(roundedRect: CGRect(x: -17, y: -36, width: 34, height: 80), cornerRadius: 17)
-            thumb.addClip()
-            ShArt.lin(c, [shc(0.14, 0.08, 0.05), shc(0.4, 0.25, 0.14), shc(0.12, 0.07, 0.04)], [0, 0.5, 1],
-                CGPoint(x: -17, y: 0), CGPoint(x: 17, y: 0))
-            c.restoreGState()
-        }
-        return SKTexture(image: im)
-    }()
-
-    static func sky(_ size: CGSize, horizonFromBottom: CGFloat) -> SKTexture {
-        let im = ShArt.img(size, scale: 1) { c in
-            let hRow = size.height - horizonFromBottom
-            ShArt.lin(c, [shc(0.1, 0.18, 0.42), shc(0.45, 0.36, 0.55), shc(0.95, 0.6, 0.4), shc(1.0, 0.86, 0.6)],
-                [0, 0.5, 0.82, 1], CGPoint(x: 0, y: 0), CGPoint(x: 0, y: hRow))
-        }
-        return SKTexture(image: im)
-    }
-
-    static func ground(_ size: CGSize) -> SKTexture {
-        let im = ShArt.img(size, scale: 2) { c in
-            ShArt.lin(c, [shc(0.9, 0.74, 0.52), shc(0.78, 0.6, 0.4), shc(0.5, 0.34, 0.2)], [0, 0.35, 1],
-                CGPoint(x: 0, y: 0), CGPoint(x: 0, y: size.height))
-            for _ in 0..<900 {
-                let y = CGFloat.random(in: 0...size.height)
-                let k = y / size.height
-                let w = CGFloat.random(in: 1...(2 + 10 * k))
-                let h = max(0.6, w * 0.35)
-                let x = CGFloat.random(in: 0...size.width)
-                let col = Bool.random() ? shc(0.35, 0.22, 0.12, 0.14) : shc(1, 0.9, 0.7, 0.12)
-                col.setFill()
-                UIBezierPath(ovalIn: CGRect(x: x, y: y, width: w, height: h)).fill()
-            }
-        }
-        return SKTexture(image: im)
     }
 }
 
-// MARK: Game objects
+func radialImage(_ size: CGSize, _ radius: CGFloat, _ colors: [UIColor], _ locs: [CGFloat]) -> UIImage {
+    let f = UIGraphicsImageRendererFormat.default()
+    f.scale = 1
+    let r = UIGraphicsImageRenderer(size: size, format: f)
+    return r.image { ctx in
+        let cs = CGColorSpaceCreateDeviceRGB()
+        let cg = colors.map { $0.cgColor } as CFArray
+        let c = CGPoint(x: size.width / 2, y: size.height / 2)
+        if let g = CGGradient(colorsSpace: cs, colors: cg, locations: locs) {
+            ctx.cgContext.drawRadialGradient(g, startCenter: c, startRadius: 0, endCenter: c, endRadius: radius, options: [.drawsAfterEndLocation])
+        }
+    }
+}
 
-final class ShTarget {
-    enum Kind { case bottle, can, plate, clay }
-    let kind: Kind
-    var x: CGFloat
-    var y: CGFloat
-    let z: CGFloat
+func groundImage(_ size: CGSize) -> UIImage {
+    let f = UIGraphicsImageRendererFormat.default()
+    f.scale = 1
+    let r = UIGraphicsImageRenderer(size: size, format: f)
+    return r.image { ctx in
+        let cs = CGColorSpaceCreateDeviceRGB()
+        let colors: [UIColor] = [
+            UIColor(red: 0.96, green: 0.66, blue: 0.38, alpha: 1),
+            UIColor(red: 0.78, green: 0.50, blue: 0.30, alpha: 1),
+            UIColor(red: 0.40, green: 0.25, blue: 0.16, alpha: 1)
+        ]
+        let locs: [CGFloat] = [0, 0.5, 1]
+        let cg = colors.map { $0.cgColor } as CFArray
+        if let g = CGGradient(colorsSpace: cs, colors: cg, locations: locs) {
+            ctx.cgContext.drawLinearGradient(g, start: CGPoint(x: 0, y: 0), end: CGPoint(x: 0, y: size.height), options: [])
+        }
+        for _ in 0..<2600 {
+            let x = CGFloat.random(in: 0..<size.width)
+            let y = CGFloat.random(in: 0..<size.height)
+            let a = CGFloat.random(in: 0.04...0.18)
+            let dark = Bool.random()
+            let col = dark ? UIColor(white: 0, alpha: a) : UIColor(white: 1, alpha: a * 0.6)
+            ctx.cgContext.setFillColor(col.cgColor)
+            let sz = CGFloat.random(in: 1...3)
+            ctx.cgContext.fill(CGRect(x: x, y: y, width: sz, height: sz * 0.6))
+        }
+    }
+}
+
+// MARK: target pieces
+
+enum TKind { case bottle, can, bandit, sheriff, pigeon }
+
+final class GTarget {
+    let node: SKNode
+    let kind: TKind
+    let w: CGFloat
+    let h: CGFloat
+    var life: CGFloat
+    let key: Int
+    var cover: SKNode?
     var vx: CGFloat = 0
     var vy: CGFloat = 0
-    var spin: CGFloat = 0
-    var alive = true
-    var node: SKSpriteNode!
-    var stand: SKSpriteNode?
-    var shadow: SKSpriteNode?
-    var mark: SKNode?
-    let hM: CGFloat
-    let wM: CGFloat
+    var hit = false
 
-    init(kind: Kind, x: CGFloat, y: CGFloat, z: CGFloat) {
+    init(node: SKNode, kind: TKind, w: CGFloat, h: CGFloat, life: CGFloat, key: Int) {
+        self.node = node
         self.kind = kind
-        self.x = x
-        self.y = y
-        self.z = z
-        switch kind {
-        case .bottle: hM = 0.46; wM = 0.165
-        case .can: hM = 0.30; wM = 0.216
-        case .plate: hM = 0.5; wM = 0.5
-        case .clay: hM = 0.22; wM = 0.5
-        }
-    }
-
-    var centerY: CGFloat { return kind == .clay ? y : y + hM / 2 }
-    var isStatic: Bool { return kind != .clay }
-}
-
-final class ShBullet {
-    let aim: CGPoint
-    let muzzle: CGPoint
-    var t: CGFloat = 0
-    var z: CGFloat = 0
-    let node: SKSpriteNode
-    var last: CGPoint
-
-    init(aim: CGPoint, muzzle: CGPoint, node: SKSpriteNode) {
-        self.aim = aim
-        self.muzzle = muzzle
-        self.node = node
-        self.last = muzzle
-    }
-}
-
-final class ShParticle {
-    let node: SKSpriteNode
-    var vx: CGFloat
-    var vy: CGFloat
-    var spin: CGFloat
-    var g: CGFloat
-    var floorY: CGFloat
-    var life: CGFloat
-
-    init(node: SKSpriteNode, vx: CGFloat, vy: CGFloat, spin: CGFloat, g: CGFloat, floorY: CGFloat, life: CGFloat) {
-        self.node = node
-        self.vx = vx
-        self.vy = vy
-        self.spin = spin
-        self.g = g
-        self.floorY = floorY
+        self.w = w
+        self.h = h
         self.life = life
+        self.key = key
     }
 }
 
-struct ShAimTouch {
-    var last: CGPoint
-    var start: CGPoint
-    var time: TimeInterval
-    var travel: CGFloat
+func makeBottleNode() -> SKNode {
+    let n = SKNode()
+    let g = UIColor(red: 0.15, green: 0.55, blue: 0.25, alpha: 0.95)
+    let gd = UIColor(red: 0.08, green: 0.35, blue: 0.16, alpha: 1)
+    n.addChild(rectNode(-9, 0, 18, 34, g))
+    n.addChild(poly([pt(-9, 34), pt(9, 34), pt(4, 46), pt(-4, 46)], g))
+    n.addChild(rectNode(-4, 46, 8, 14, gd))
+    n.addChild(rectNode(-5, 58, 10, 4, UIColor(red: 0.85, green: 0.70, blue: 0.30, alpha: 1)))
+    n.addChild(rectNode(-9, 8, 18, 12, UIColor(red: 0.90, green: 0.85, blue: 0.70, alpha: 0.9)))
+    n.addChild(rectNode(-6, 3, 3, 30, UIColor(white: 1, alpha: 0.35)))
+    return n
+}
+
+func makeCanNode() -> SKNode {
+    let n = SKNode()
+    n.addChild(rectNode(-12, 0, 24, 30, UIColor(white: 0.70, alpha: 1)))
+    n.addChild(rectNode(-12, 8, 24, 14, UIColor(red: 0.78, green: 0.18, blue: 0.14, alpha: 1)))
+    n.addChild(rectNode(-12, 28, 24, 3, UIColor(white: 0.45, alpha: 1)))
+    n.addChild(rectNode(-12, 0, 24, 3, UIColor(white: 0.45, alpha: 1)))
+    n.addChild(rectNode(-8, 2, 3, 26, UIColor(white: 1, alpha: 0.45)))
+    return n
+}
+
+func makeOutlawNode(sheriff: Bool) -> SKNode {
+    let n = SKNode()
+    let wood = UIColor(red: 0.45, green: 0.30, blue: 0.16, alpha: 1)
+    let coat = sheriff ? UIColor(red: 0.62, green: 0.50, blue: 0.30, alpha: 1) : UIColor(red: 0.20, green: 0.15, blue: 0.14, alpha: 1)
+    let hat = sheriff ? UIColor(red: 0.92, green: 0.88, blue: 0.78, alpha: 1) : UIColor(red: 0.10, green: 0.08, blue: 0.07, alpha: 1)
+    let skin = UIColor(red: 0.80, green: 0.58, blue: 0.42, alpha: 1)
+    n.addChild(rectNode(-4, 0, 8, 30, wood))
+    n.addChild(poly([pt(-26, 24), pt(26, 24), pt(20, 70), pt(-20, 70)], coat, UIColor.black, 1.5))
+    let head = SKShapeNode(circleOfRadius: 13)
+    head.fillColor = skin
+    head.strokeColor = UIColor.black
+    head.lineWidth = 1.5
+    head.position = pt(0, 82)
+    n.addChild(head)
+    if sheriff {
+        n.addChild(poly(starPoints(pt(0, 52), 9, 4), UIColor(red: 1.0, green: 0.84, blue: 0.2, alpha: 1), UIColor.black, 1))
+    } else {
+        n.addChild(poly([pt(-13, 74), pt(13, 74), pt(10, 84), pt(-10, 84)], UIColor(red: 0.75, green: 0.12, blue: 0.10, alpha: 1)))
+        n.addChild(rectNode(-20, 32, 40, 5, UIColor(red: 0.35, green: 0.22, blue: 0.10, alpha: 1)))
+    }
+    let brim = SKShapeNode(ellipseOf: CGSize(width: 42, height: 9))
+    brim.fillColor = hat
+    brim.strokeColor = UIColor.black
+    brim.lineWidth = 1
+    brim.position = pt(0, 91)
+    n.addChild(brim)
+    n.addChild(rectNode(-10, 91, 20, 13, hat))
+    return n
+}
+
+func makeCrateNode() -> SKNode {
+    let n = SKNode()
+    let w = UIColor(red: 0.50, green: 0.33, blue: 0.17, alpha: 1)
+    let d = UIColor(red: 0.28, green: 0.17, blue: 0.08, alpha: 1)
+    n.addChild(rectNode(-32, 0, 64, 38, w))
+    n.addChild(rectNode(-32, 0, 64, 4, d))
+    n.addChild(rectNode(-32, 34, 64, 4, d))
+    n.addChild(rectNode(-32, 0, 4, 38, d))
+    n.addChild(rectNode(28, 0, 4, 38, d))
+    n.addChild(rectNode(-1, 4, 2, 30, d))
+    n.addChild(lineNode(pt(-28, 4), pt(28, 34), d, 3))
+    return n
+}
+
+func makePigeonNode() -> SKNode {
+    let n = SKNode()
+    let d = SKShapeNode(ellipseOf: CGSize(width: 44, height: 14))
+    d.fillColor = UIColor(red: 1.0, green: 0.45, blue: 0.10, alpha: 1)
+    d.strokeColor = UIColor(red: 0.60, green: 0.20, blue: 0.05, alpha: 1)
+    d.lineWidth = 2
+    n.addChild(d)
+    let top = SKShapeNode(ellipseOf: CGSize(width: 28, height: 6))
+    top.fillColor = UIColor(red: 1.0, green: 0.70, blue: 0.30, alpha: 1)
+    top.strokeColor = UIColor.clear
+    top.position = pt(0, 2)
+    n.addChild(top)
+    return n
+}
+
+func makeCactusNode() -> SKNode {
+    let n = SKNode()
+    let g = UIColor(red: 0.12, green: 0.27, blue: 0.15, alpha: 1)
+    let body = SKShapeNode(rectOf: CGSize(width: 12, height: 70), cornerRadius: 6)
+    body.fillColor = g
+    body.strokeColor = UIColor.clear
+    body.position = pt(0, 35)
+    n.addChild(body)
+    let armL = SKShapeNode(rectOf: CGSize(width: 18, height: 8), cornerRadius: 4)
+    armL.fillColor = g
+    armL.strokeColor = UIColor.clear
+    armL.position = pt(-12, 36)
+    n.addChild(armL)
+    let armLUp = SKShapeNode(rectOf: CGSize(width: 8, height: 24), cornerRadius: 4)
+    armLUp.fillColor = g
+    armLUp.strokeColor = UIColor.clear
+    armLUp.position = pt(-18, 46)
+    n.addChild(armLUp)
+    let armR = SKShapeNode(rectOf: CGSize(width: 16, height: 8), cornerRadius: 4)
+    armR.fillColor = g
+    armR.strokeColor = UIColor.clear
+    armR.position = pt(11, 24)
+    n.addChild(armR)
+    let armRUp = SKShapeNode(rectOf: CGSize(width: 8, height: 20), cornerRadius: 4)
+    armRUp.fillColor = g
+    armRUp.strokeColor = UIColor.clear
+    armRUp.position = pt(15, 32)
+    n.addChild(armRUp)
+    return n
 }
 
 // MARK: SwiftUI wrapper
@@ -2387,1286 +2130,898 @@ struct ShootView: View {
     }
 }
 
-// MARK: The scene
+// MARK: scene
 
 final class ShootScene: SKScene {
-    enum Phase { case intro, play, over }
-
     static func make() -> ShootScene {
         let s = ShootScene(size: UIScreen.main.bounds.size)
         s.scaleMode = .aspectFill
         return s
     }
 
-    // geometry
-    private var W: CGFloat = 390
-    private var H: CGFloat = 844
-    private var u: CGFloat = 1
-    private var f: CGFloat = 900
-    private var horizonY: CGFloat = 460
-    private let camH: CGFloat = 1.5
+    var world = SKNode()
+    var horizonY: CGFloat = 0
+    var rowY: [CGFloat] = []
+    let rowScale: [CGFloat] = [0.55, 0.80, 1.10]
+    let slotCount = 5
 
-    // ballistics (exaggerated "old west" revolver so drop & wind are visible)
-    private let v0: CGFloat = 75
-    private let kDrag: CGFloat = 0.01
-    private let zeroDist: CGFloat = 18
-    private let grav: CGFloat = 9.8
-    private var wind: CGFloat = 0
+    var targets: [GTarget] = []
+    var occupied = Set<Int>()
 
-    // nodes
-    private let root = SKNode()
-    private let hud = SKNode()
-    private var gun = SKSpriteNode()
-    private var cylinder = SKSpriteNode()
-    private var crossNode = SKNode()
-    private var crossShape = SKShapeNode()
-    private var distLabel = SKLabelNode()
-    private var deadOverlay = SKSpriteNode()
-    private var clouds: [SKNode] = []
-    private var buttons: [String: SKShapeNode] = [:]
-    private var buttonR: [String: CGFloat] = [:]
-    private var scoreLabel = SKLabelNode()
-    private var comboLabel = SKLabelNode()
-    private var timeLabel = SKLabelNode()
-    private var windLabel = SKLabelNode()
-    private var ammoIcons: [SKSpriteNode] = []
-    private var breathFill = SKSpriteNode()
-    private var deadFill = SKSpriteNode()
-    private var introNode = SKNode()
-    private var overNode: SKNode?
+    var gun: SKNode!
+    var gunBody: SKNode!
+    var muzzle: SKNode!
 
-    // haptics
-    private let hapHeavy = UIImpactFeedbackGenerator(style: .heavy)
-    private let hapLight = UIImpactFeedbackGenerator(style: .light)
+    var ammo = 6
+    var reloading = false
+    var score = 0
+    var combo = 0
+    var timeLeft: CGFloat = 60
+    var spawnTimer: CGFloat = 0.5
+    var over = false
+    var overDate = Date()
+    var lastTime: TimeInterval = 0
+    var didSetup = false
 
-    // state
-    private var built = false
-    private var phase: Phase = .intro
-    private var phaseTimer: CGFloat = 0
-    private var overReady = false
-    private var lastTime: TimeInterval = 0
-    private var clock: CGFloat = 0
-    private var realClock: CGFloat = 0
-    private var ts: CGFloat = 1
+    var scoreLabel: SKLabelNode!
+    var timerLabel: SKLabelNode!
+    var comboLabel: SKLabelNode!
+    var reloadLabel: SKLabelNode!
+    var bullets: [SKSpriteNode] = []
+    var reloadBtn: SKShapeNode!
+    var overlay: SKNode?
 
-    private var targets: [ShTarget] = []
-    private var bullets: [ShBullet] = []
-    private var particles: [ShParticle] = []
-    private var respawn: [CGFloat] = []
-    private var nextClay: CGFloat = 3
-    private var marks: [ShTarget] = []
+    override func didMove(to view: SKView) {
+        if !didSetup {
+            didSetup = true
+            setup()
+        }
+    }
 
-    private var score = 0
-    private var combo = 0
-    private var shots = 0
-    private var hits = 0
-    private var ammo = 6
-    private var timeLeft: CGFloat = 90
-    private var reloading = false
-    private var reloadTimer: CGFloat = 0
-    private var reloadPose: CGFloat = 0
-
-    private var aimBase = CGPoint.zero
-    private var kick = CGPoint.zero
-    private var swayAmp: CGFloat = 12
-    private var aimShown = CGPoint.zero
-    private var execAim = CGPoint.zero
-    private var recoil: CGFloat = 0
-    private var recoilDir: CGFloat = 1
-    private var shake: CGFloat = 0
-
-    private var holding = false
-    private var exhausted = false
-    private var breath: CGFloat = 1
-    private var deadActive = false
-    private var deadMeter: CGFloat = 0.5
-    private var executing = false
-
-    private var aimTouches: [UITouch: ShAimTouch] = [:]
-    private var buttonTouches: [UITouch: String] = [:]
-
-    private var gunScale: CGFloat = 0.88
+    func after(_ t: TimeInterval, _ f: @escaping () -> Void) {
+        run(SKAction.sequence([SKAction.wait(forDuration: t), SKAction.run(f)]))
+    }
 
     // MARK: setup
 
-    override func didMove(to view: SKView) {
-        if built { return }
-        built = true
-        view.isMultipleTouchEnabled = true
-        backgroundColor = .black
-        W = size.width
-        H = size.height
-        u = min(W, H) / 390
-        f = W * 2.3
-        horizonY = H * 0.55
-        gunScale = 0.88 * u
-        hapHeavy.prepare()
-        hapLight.prepare()
-        _ = ShSFX.shared
-
-        addChild(root)
-        hud.zPosition = 900
-        addChild(hud)
-
-        buildSky()
-        buildGround()
+    func setup() {
+        horizonY = size.height * 0.50
+        rowY = [size.height * 0.455, size.height * 0.37, size.height * 0.27]
+        backgroundColor = UIColor.black
+        addChild(world)
+        buildScenery()
         buildGun()
+        buildOverlays()
         buildHUD()
-
-        aimBase = CGPoint(x: W / 2, y: H * 0.46)
-        aimShown = aimBase
-        startGame()
+        newGame()
     }
 
-    private func shLabel(_ text: String, _ size: CGFloat, _ color: UIColor,
-                         _ h: SKLabelNodeHorizontalAlignmentMode = .center) -> SKLabelNode {
-        let l = SKLabelNode(fontNamed: "Copperplate-Bold")
-        l.text = text
-        l.fontSize = size
-        l.fontColor = color
-        l.horizontalAlignmentMode = h
-        l.verticalAlignmentMode = .center
-        return l
-    }
-
-    private func setText(_ l: SKLabelNode, _ s: String) {
-        if l.text != s { l.text = s }
-    }
-
-    private func buildSky() {
-        let sw = W + 60
-        let sh = H + 60
-        let sky = SKSpriteNode(texture: ShArt.sky(CGSize(width: sw, height: sh), horizonFromBottom: horizonY + 30),
-                               size: CGSize(width: sw, height: sh))
-        sky.anchorPoint = .zero
-        sky.position = CGPoint(x: -30, y: -30)
-        sky.zPosition = -1000
-        root.addChild(sky)
-
-        let sunPos = CGPoint(x: W * 0.7, y: horizonY + H * 0.1)
-        let glow = SKSpriteNode(texture: ShArt.soft, size: CGSize(width: 560 * u, height: 560 * u))
-        glow.color = shc(1, 0.6, 0.22)
-        glow.colorBlendFactor = 1
-        glow.alpha = 0.75
-        glow.blendMode = .add
-        glow.position = sunPos
-        glow.zPosition = -990
-        root.addChild(glow)
-        let core = SKSpriteNode(texture: ShArt.soft, size: CGSize(width: 110 * u, height: 110 * u))
-        core.color = shc(1, 0.96, 0.8)
-        core.colorBlendFactor = 1
-        core.blendMode = .add
-        core.position = sunPos
-        core.zPosition = -989
-        root.addChild(core)
-
-        for _ in 0..<6 {
-            let cl = SKNode()
-            let baseW = CGFloat.random(in: 120...220) * u
-            for j in 0..<3 {
-                let part = SKSpriteNode(texture: ShArt.soft,
-                                        size: CGSize(width: baseW * CGFloat.random(in: 0.6...1.0),
-                                                     height: baseW * 0.28))
-                part.color = shc(1, 0.78, 0.68)
-                part.colorBlendFactor = 1
-                part.alpha = 0.5
-                part.position = CGPoint(x: CGFloat(j - 1) * baseW * 0.35, y: CGFloat.random(in: -6...6) * u)
-                cl.addChild(part)
-            }
-            cl.position = CGPoint(x: CGFloat.random(in: 0...W), y: horizonY + H * CGFloat.random(in: 0.1...0.38))
-            cl.zPosition = -980
-            root.addChild(cl)
-            clouds.append(cl)
-        }
-
-        // mountains
-        let layers: [(CGFloat, UIColor, CGFloat, CGFloat, CGFloat)] = [
-            (0.17, shc(0.78, 0.52, 0.48), 1.0, 0.011, -900),
-            (0.11, shc(0.62, 0.4, 0.38), 3.1, 0.017, -890),
-            (0.06, shc(0.48, 0.31, 0.3), 5.7, 0.023, -880)
-        ]
-        for (hFrac, col, seed, freq, z) in layers {
-            let path = CGMutablePath()
-            let maxH = H * hFrac
-            path.move(to: CGPoint(x: -30, y: horizonY - 4))
-            var x: CGFloat = -30
-            while x <= W + 40 {
-                let a = sin(x * freq + seed)
-                let b = sin(x * freq * 2.7 + seed * 2.3)
-                let c = sin(x * 0.09 + seed) * 0.05
-                let y = horizonY + maxH * (0.5 + 0.3 * a + 0.15 * b + c)
-                path.addLine(to: CGPoint(x: x, y: y))
-                x += 10
-            }
-            path.addLine(to: CGPoint(x: W + 40, y: horizonY - 4))
-            path.closeSubpath()
-            let m = SKShapeNode(path: path)
-            m.fillColor = col
-            m.strokeColor = .clear
-            m.zPosition = z
-            root.addChild(m)
-        }
-    }
-
-    private func buildGround() {
-        let gw = W + 60
-        let gh = horizonY + 30
-        let g = SKSpriteNode(texture: ShArt.ground(CGSize(width: gw, height: gh)), size: CGSize(width: gw, height: gh))
-        g.anchorPoint = CGPoint(x: 0, y: 1)
-        g.position = CGPoint(x: -30, y: horizonY)
-        g.zPosition = -800
-        root.addChild(g)
-
-        // tufts and rocks give depth
-        for i in 0..<70 {
-            let z = CGFloat.random(in: 5...55)
-            let half = (W / 2) / f * z * 1.1
-            let x = CGFloat.random(in: -half...half)
-            let isRock = i % 3 != 0
-            let n = SKSpriteNode(texture: isRock ? ShArt.rock : ShArt.tuft)
-            let wM: CGFloat = isRock ? CGFloat.random(in: 0.25...0.6) : CGFloat.random(in: 0.3...0.5)
-            let s = f / z
-            n.size = CGSize(width: max(2, wM * s), height: max(1.5, wM * s * (isRock ? 0.55 : 0.55)))
-            n.anchorPoint = CGPoint(x: 0.5, y: 0.2)
-            n.position = project(x, 0, z)
-            n.color = shc(0.93, 0.72, 0.55)
-            n.colorBlendFactor = min(0.5, z / 70)
-            n.zPosition = 500 - z - 0.3
-            root.addChild(n)
-        }
-
-        // cacti
-        for _ in 0..<7 {
-            let z = CGFloat.random(in: 10...45)
-            let half = (W / 2) / f * z
-            let sign: CGFloat = Bool.random() ? 1 : -1
-            let x = sign * half * CGFloat.random(in: 0.55...1.05)
-            let hM = CGFloat.random(in: 1.7...2.4)
-            let s = f / z
-            let n = SKSpriteNode(texture: ShArt.cactus)
-            n.size = CGSize(width: hM * 0.5 * s, height: hM * s)
-            n.anchorPoint = CGPoint(x: 0.5, y: 0.02)
-            n.position = project(x, 0, z)
-            n.color = shc(0.93, 0.72, 0.55)
-            n.colorBlendFactor = min(0.5, z / 70)
-            n.zPosition = 500 - z - 0.2
-            root.addChild(n)
-        }
-    }
-
-    private func buildGun() {
-        gun = SKSpriteNode(texture: ShArt.gunBody, size: CGSize(width: 240, height: 360))
-        gun.anchorPoint = CGPoint(x: 0.5, y: 0)
-        gun.zPosition = 700
-        gun.setScale(gunScale)
-        root.addChild(gun)
-
-        cylinder = SKSpriteNode(texture: ShArt.cylinder, size: CGSize(width: 88, height: 88))
-        cylinder.position = CGPoint(x: 0, y: 360 - 218)
-        cylinder.zPosition = 1
-        gun.addChild(cylinder)
-
-        // crosshair
+    func ridge(baseY: CGFloat, minH: CGFloat, maxH: CGFloat, color: UIColor, z: CGFloat, step: CGFloat) -> SKShapeNode {
         let p = CGMutablePath()
-        let gap: CGFloat = 8 * u
-        let len: CGFloat = 30 * u
-        p.move(to: CGPoint(x: -len, y: 0)); p.addLine(to: CGPoint(x: -gap, y: 0))
-        p.move(to: CGPoint(x: gap, y: 0)); p.addLine(to: CGPoint(x: len, y: 0))
-        p.move(to: CGPoint(x: 0, y: -len)); p.addLine(to: CGPoint(x: 0, y: -gap))
-        p.move(to: CGPoint(x: 0, y: gap)); p.addLine(to: CGPoint(x: 0, y: len))
-        p.addEllipse(in: CGRect(x: -17 * u, y: -17 * u, width: 34 * u, height: 34 * u))
-        crossShape = SKShapeNode(path: p)
-        crossShape.strokeColor = shc(1, 1, 1, 0.92)
-        crossShape.lineWidth = 1.6 * u
-        crossShape.fillColor = .clear
-        crossNode.addChild(crossShape)
-        let dot = SKShapeNode(circleOfRadius: 1.8 * u)
-        dot.fillColor = shc(1, 0.2, 0.15)
-        dot.strokeColor = .clear
-        crossNode.addChild(dot)
-        distLabel = shLabel("", 13 * u, shc(1, 1, 1, 0.9))
-        distLabel.position = CGPoint(x: 0, y: -46 * u)
-        crossNode.addChild(distLabel)
-        crossNode.zPosition = 800
-        addChild(crossNode)
+        var x: CGFloat = -20
+        var h = CGFloat.random(in: minH...maxH)
+        p.move(to: CGPoint(x: x, y: baseY))
+        p.addLine(to: CGPoint(x: x, y: baseY + h))
+        while x < size.width + 20 {
+            x += CGFloat.random(in: step...(step * 2.2))
+            p.addLine(to: CGPoint(x: x, y: baseY + h))
+            let nh = CGFloat.random(in: minH...maxH)
+            x += CGFloat.random(in: 6...18)
+            p.addLine(to: CGPoint(x: x, y: baseY + nh))
+            h = nh
+        }
+        p.addLine(to: CGPoint(x: x, y: baseY))
+        p.closeSubpath()
+        let n = SKShapeNode(path: p)
+        n.fillColor = color
+        n.strokeColor = UIColor.clear
+        n.zPosition = z
+        return n
     }
 
-    private func makeButton(_ name: String, _ title: String, _ r: CGFloat, _ color: UIColor, _ pos: CGPoint) {
-        let b = SKShapeNode(circleOfRadius: r)
-        b.fillColor = color.withAlphaComponent(0.55)
-        b.strokeColor = shc(1, 1, 1, 0.8)
-        b.lineWidth = 2 * u
-        b.position = pos
-        b.zPosition = 10
-        let l = shLabel(title, r * 0.3, shc(1, 1, 1))
-        l.numberOfLines = 2
-        l.preferredMaxLayoutWidth = r * 1.8
-        b.addChild(l)
-        hud.addChild(b)
-        buttons[name] = b
-        buttonR[name] = r
+    func buildScenery() {
+        let w = size.width
+        let h = size.height
+        let cx = w / 2
+
+        // sky
+        let skyColors: [UIColor] = [
+            UIColor(red: 0.10, green: 0.12, blue: 0.30, alpha: 1),
+            UIColor(red: 0.40, green: 0.24, blue: 0.46, alpha: 1),
+            UIColor(red: 0.93, green: 0.48, blue: 0.33, alpha: 1),
+            UIColor(red: 1.00, green: 0.78, blue: 0.45, alpha: 1)
+        ]
+        let skyLocs: [CGFloat] = [0, 0.45, 0.80, 1]
+        let sky = SKSpriteNode(texture: SKTexture(image: gradientImage(CGSize(width: 8, height: 256), skyColors, skyLocs)))
+        sky.size = CGSize(width: w, height: h - horizonY + 60)
+        sky.anchorPoint = CGPoint(x: 0.5, y: 0)
+        sky.position = CGPoint(x: cx, y: horizonY - 60)
+        sky.zPosition = -100
+        world.addChild(sky)
+
+        // sun + glow + god rays
+        let sunPos = CGPoint(x: cx + 70, y: horizonY + 38)
+        let glowColors: [UIColor] = [
+            UIColor(red: 1.0, green: 0.85, blue: 0.50, alpha: 0.95),
+            UIColor(red: 1.0, green: 0.55, blue: 0.25, alpha: 0.35),
+            UIColor(red: 1.0, green: 0.40, blue: 0.20, alpha: 0.0)
+        ]
+        let glowLocs: [CGFloat] = [0, 0.35, 1]
+        let glow = SKSpriteNode(texture: SKTexture(image: radialImage(CGSize(width: 256, height: 256), 128, glowColors, glowLocs)),
+                                size: CGSize(width: 520, height: 520))
+        glow.position = sunPos
+        glow.zPosition = -96
+        glow.blendMode = .add
+        world.addChild(glow)
+
+        let sun = SKShapeNode(circleOfRadius: 26)
+        sun.fillColor = UIColor(red: 1.0, green: 0.96, blue: 0.80, alpha: 1)
+        sun.strokeColor = UIColor.clear
+        sun.position = sunPos
+        sun.zPosition = -95
+        world.addChild(sun)
+
+        let angles: [CGFloat] = [-0.8, -0.4, 0.0, 0.4, 0.8]
+        for a in angles {
+            let len = h
+            let p1 = CGPoint(x: sunPos.x + sin(a - 0.05) * len, y: sunPos.y + cos(a - 0.05) * len)
+            let p2 = CGPoint(x: sunPos.x + sin(a + 0.05) * len, y: sunPos.y + cos(a + 0.05) * len)
+            let beam = poly([sunPos, p1, p2], UIColor(white: 1, alpha: 0.07))
+            beam.blendMode = .add
+            beam.zPosition = -94
+            world.addChild(beam)
+        }
+
+        // clouds
+        for _ in 0..<5 {
+            let cy = horizonY + CGFloat.random(in: 90...(h - horizonY - 40))
+            let cw = CGFloat.random(in: 120...220)
+            let cl = SKShapeNode(ellipseOf: CGSize(width: cw, height: cw * 0.16))
+            cl.fillColor = UIColor(red: 1.0, green: 0.62, blue: 0.50, alpha: 0.35)
+            cl.strokeColor = UIColor.clear
+            cl.position = pt(CGFloat.random(in: 0...w), cy)
+            cl.zPosition = -92
+            world.addChild(cl)
+            let dur = TimeInterval(CGFloat.random(in: 70...120))
+            cl.run(SKAction.repeatForever(SKAction.sequence([
+                SKAction.moveBy(x: -(w + 300), y: 0, duration: dur),
+                SKAction.moveBy(x: w + 300, y: 0, duration: 0)
+            ])))
+        }
+
+        // mesas
+        world.addChild(ridge(baseY: horizonY - 4, minH: 45, maxH: 110, color: UIColor(red: 0.62, green: 0.36, blue: 0.42, alpha: 1), z: -90, step: 40))
+        world.addChild(ridge(baseY: horizonY - 8, minH: 28, maxH: 70, color: UIColor(red: 0.48, green: 0.28, blue: 0.33, alpha: 1), z: -88, step: 60))
+        world.addChild(ridge(baseY: horizonY - 14, minH: 14, maxH: 40, color: UIColor(red: 0.34, green: 0.20, blue: 0.24, alpha: 1), z: -86, step: 80))
+
+        // horizon haze
+        let hazeColors: [UIColor] = [
+            UIColor(red: 1.0, green: 0.70, blue: 0.40, alpha: 0.0),
+            UIColor(red: 1.0, green: 0.70, blue: 0.40, alpha: 0.55)
+        ]
+        let hazeLocs: [CGFloat] = [0, 1]
+        let haze = SKSpriteNode(texture: SKTexture(image: gradientImage(CGSize(width: 8, height: 64), hazeColors, hazeLocs)))
+        haze.size = CGSize(width: w, height: 110)
+        haze.anchorPoint = CGPoint(x: 0.5, y: 0)
+        haze.position = CGPoint(x: cx, y: horizonY - 14)
+        haze.zPosition = -84
+        world.addChild(haze)
+
+        // ground
+        let ground = SKSpriteNode(texture: SKTexture(image: groundImage(CGSize(width: 375, height: 512))))
+        ground.size = CGSize(width: w, height: horizonY - 16)
+        ground.anchorPoint = CGPoint(x: 0.5, y: 0)
+        ground.position = CGPoint(x: cx, y: 0)
+        ground.zPosition = -80
+        world.addChild(ground)
+
+        // cacti near the horizon
+        for _ in 0..<5 {
+            let c = makeCactusNode()
+            let s = CGFloat.random(in: 0.5...0.95)
+            c.setScale(s)
+            c.position = pt(CGFloat.random(in: 10...(w - 10)), horizonY - 18 - CGFloat.random(in: 0...8))
+            c.zPosition = -78
+            c.alpha = 0.9
+            world.addChild(c)
+        }
+
+        // rocks and dry grass
+        for _ in 0..<16 {
+            let rw = CGFloat.random(in: 6...16)
+            let rock = SKShapeNode(ellipseOf: CGSize(width: rw, height: rw * 0.55))
+            rock.fillColor = UIColor(red: 0.35, green: 0.22, blue: 0.15, alpha: 0.8)
+            rock.strokeColor = UIColor.clear
+            rock.position = pt(CGFloat.random(in: 0...w), CGFloat.random(in: 10...(horizonY - 40)))
+            rock.zPosition = -70
+            world.addChild(rock)
+        }
+        for _ in 0..<22 {
+            let gx = CGFloat.random(in: 0...w)
+            let gy = CGFloat.random(in: 10...(horizonY - 30))
+            let tuft = poly([pt(-5, 0), pt(-2, 9), pt(0, 2), pt(3, 11), pt(5, 0)], UIColor(red: 0.55, green: 0.50, blue: 0.25, alpha: 0.85))
+            tuft.position = pt(gx, gy)
+            tuft.zPosition = -70
+            world.addChild(tuft)
+        }
+
+        // tumbleweed
+        let twColor = UIColor(red: 0.45, green: 0.32, blue: 0.18, alpha: 1)
+        let tw = SKShapeNode(circleOfRadius: 11)
+        tw.fillColor = UIColor.clear
+        tw.strokeColor = twColor
+        tw.lineWidth = 2
+        tw.addChild(lineNode(pt(-10, -3), pt(10, 4), twColor, 1.5))
+        tw.addChild(lineNode(pt(-4, -10), pt(5, 10), twColor, 1.5))
+        tw.position = pt(-30, horizonY - 60)
+        tw.zPosition = 5
+        world.addChild(tw)
+        tw.run(SKAction.repeatForever(SKAction.sequence([
+            SKAction.group([
+                SKAction.moveBy(x: w + 80, y: 0, duration: 9),
+                SKAction.rotate(byAngle: -16, duration: 9)
+            ]),
+            SKAction.moveBy(x: -(w + 80), y: 0, duration: 0),
+            SKAction.wait(forDuration: 4)
+        ])))
+
+        // fence rows
+        for i in 0..<3 {
+            let s = rowScale[i]
+            let y = rowY[i]
+            let rowZ = CGFloat(10 + i * 10)
+            let plank = rectNode(-10, y - 10 * s, w + 20, 10 * s, UIColor(red: 0.42, green: 0.27, blue: 0.14, alpha: 1))
+            plank.zPosition = rowZ
+            world.addChild(plank)
+            let low = rectNode(-10, y - 10 * s, w + 20, 2 * s, UIColor(red: 0.20, green: 0.12, blue: 0.07, alpha: 1))
+            low.zPosition = rowZ
+            world.addChild(low)
+            let top = rectNode(-10, y - 2 * s, w + 20, 2 * s, UIColor(red: 0.62, green: 0.42, blue: 0.24, alpha: 1))
+            top.zPosition = rowZ
+            world.addChild(top)
+            var px: CGFloat = 20
+            while px < w {
+                let post = rectNode(px - 5 * s, y - 52 * s, 10 * s, 42 * s, UIColor(red: 0.34, green: 0.21, blue: 0.11, alpha: 1))
+                post.zPosition = rowZ - 1
+                world.addChild(post)
+                px += 78
+            }
+        }
     }
 
-    private func makeBar(at pos: CGPoint, color: UIColor) -> SKSpriteNode {
-        let bg = SKSpriteNode(color: shc(0, 0, 0, 0.55), size: CGSize(width: 64 * u, height: 7 * u))
-        bg.position = pos
-        hud.addChild(bg)
-        let fill = SKSpriteNode(color: color, size: CGSize(width: 64 * u, height: 7 * u))
-        fill.anchorPoint = CGPoint(x: 0, y: 0.5)
-        fill.position = CGPoint(x: -32 * u, y: 0)
-        fill.zPosition = 1
-        bg.addChild(fill)
-        return fill
+    func buildGun() {
+        gun = SKNode()
+        gun.position = pt(size.width / 2, -70)
+        gun.zPosition = 80
+        gun.setScale(0.85)
+        addChild(gun)
+        gunBody = SKNode()
+        gun.addChild(gunBody)
+
+        let steelD = UIColor(white: 0.14, alpha: 1)
+        let steelM = UIColor(white: 0.30, alpha: 1)
+        let steelL = UIColor(white: 0.58, alpha: 1)
+        let wood = UIColor(red: 0.40, green: 0.22, blue: 0.11, alpha: 1)
+        let woodL = UIColor(red: 0.58, green: 0.35, blue: 0.18, alpha: 1)
+        let black = UIColor.black
+
+        // grip
+        gunBody.addChild(poly([pt(-32, -80), pt(32, -80), pt(23, 40), pt(-23, 40)], wood, black, 1.5))
+        for i in 0..<5 {
+            let x = CGFloat(i - 2) * 9
+            gunBody.addChild(lineNode(pt(x * 0.85, -74), pt(x * 0.7, 36), woodL.withAlphaComponent(0.55), 1.5))
+        }
+        // frame
+        gunBody.addChild(poly([pt(-27, 30), pt(27, 30), pt(25, 96), pt(-25, 96)], steelM, black, 1.5))
+        gunBody.addChild(poly([pt(-27, 30), pt(-14, 30), pt(-14, 96), pt(-25, 96)], steelD))
+        // hammer
+        gunBody.addChild(poly([pt(-6, 92), pt(6, 92), pt(9, 112), pt(-1, 120), pt(-9, 104)], steelD, black, 1))
+        // cylinder
+        let cyl = SKShapeNode(rectOf: CGSize(width: 62, height: 54), cornerRadius: 9)
+        cyl.fillColor = steelM
+        cyl.strokeColor = black
+        cyl.lineWidth = 1.5
+        cyl.position = pt(0, 120)
+        gunBody.addChild(cyl)
+        for i in 0..<5 {
+            let x = CGFloat(i - 2) * 12
+            gunBody.addChild(lineNode(pt(x, 98), pt(x, 142), steelD, 2))
+        }
+        gunBody.addChild(lineNode(pt(-26, 142), pt(26, 142), steelL, 2))
+        // barrel
+        gunBody.addChild(poly([pt(-15, 146), pt(15, 146), pt(9, 300), pt(-9, 300)], steelD, black, 1.5))
+        gunBody.addChild(poly([pt(-9, 146), pt(-3, 146), pt(-2, 298), pt(-6, 298)], steelL))
+        gunBody.addChild(poly([pt(-3, 146), pt(3, 146), pt(2, 300), pt(-2, 300)], steelM))
+        // sights
+        gunBody.addChild(poly([pt(-4, 300), pt(4, 300), pt(0, 316)], steelD, black, 1))
+        gunBody.addChild(poly([pt(-12, 146), pt(-5, 146), pt(-5, 156), pt(-12, 156)], steelD))
+        gunBody.addChild(poly([pt(5, 146), pt(12, 146), pt(12, 156), pt(5, 156)], steelD))
+
+        muzzle = SKNode()
+        muzzle.position = pt(0, 316)
+        gunBody.addChild(muzzle)
     }
 
-    private func buildHUD() {
-        // vignette + dead eye tint (above world, below hud buttons)
-        let vig = SKSpriteNode(texture: ShArt.vignette, size: size)
-        vig.position = CGPoint(x: W / 2, y: H / 2)
-        vig.zPosition = 850
+    func buildOverlays() {
+        let center = CGPoint(x: size.width / 2, y: size.height / 2)
+        let vigColors: [UIColor] = [UIColor(white: 0, alpha: 0), UIColor(white: 0, alpha: 0), UIColor(white: 0, alpha: 0.62)]
+        let vigLocs: [CGFloat] = [0, 0.55, 1]
+        let vig = SKSpriteNode(texture: SKTexture(image: radialImage(CGSize(width: 256, height: 512), hypot(128, 256), vigColors, vigLocs)),
+                               size: size)
+        vig.position = center
+        vig.zPosition = 90
         addChild(vig)
 
-        deadOverlay = SKSpriteNode(color: shc(0.5, 0.42, 0.34), size: size)
-        deadOverlay.position = CGPoint(x: W / 2, y: H / 2)
-        deadOverlay.alpha = 0
-        deadOverlay.zPosition = 820
-        addChild(deadOverlay)
+        let tint = SKSpriteNode(color: UIColor(red: 1.0, green: 0.55, blue: 0.20, alpha: 0.07), size: size)
+        tint.position = center
+        tint.zPosition = 91
+        addChild(tint)
 
-        scoreLabel = shLabel("0", 38 * u, shc(1, 0.92, 0.7))
-        scoreLabel.position = CGPoint(x: W / 2, y: H - 72 * u)
-        hud.addChild(scoreLabel)
+        for _ in 0..<22 {
+            let r = CGFloat.random(in: 1...2.5)
+            let m = SKShapeNode(circleOfRadius: r)
+            m.fillColor = UIColor(red: 1.0, green: 0.92, blue: 0.75, alpha: CGFloat.random(in: 0.2...0.45))
+            m.strokeColor = UIColor.clear
+            m.position = pt(CGFloat.random(in: 0...size.width), CGFloat.random(in: 0...size.height))
+            m.zPosition = 85
+            addChild(m)
+            let dx = CGFloat.random(in: -40...40)
+            let dy = CGFloat.random(in: -20...40)
+            let d = TimeInterval(CGFloat.random(in: 6...12))
+            m.run(SKAction.repeatForever(SKAction.sequence([
+                SKAction.moveBy(x: dx, y: dy, duration: d),
+                SKAction.moveBy(x: -dx, y: -dy, duration: d)
+            ])))
+        }
+    }
 
-        comboLabel = shLabel("", 17 * u, shc(1, 0.75, 0.25))
-        comboLabel.position = CGPoint(x: W / 2, y: H - 100 * u)
-        hud.addChild(comboLabel)
+    func buildHUD() {
+        scoreLabel = westernLabel("0", 36, UIColor.white)
+        scoreLabel.position = pt(size.width / 2, size.height - 102)
+        scoreLabel.zPosition = 100
+        addChild(scoreLabel)
 
-        timeLabel = shLabel("90", 28 * u, shc(1, 1, 1), .right)
-        timeLabel.position = CGPoint(x: W - 18 * u, y: H - 72 * u)
-        hud.addChild(timeLabel)
+        timerLabel = westernLabel("60", 28, UIColor.yellow)
+        timerLabel.horizontalAlignmentMode = .right
+        timerLabel.position = pt(size.width - 18, size.height - 98)
+        timerLabel.zPosition = 100
+        addChild(timerLabel)
 
-        windLabel = shLabel("", 14 * u, shc(0.85, 0.95, 1), .right)
-        windLabel.position = CGPoint(x: W - 18 * u, y: H - 100 * u)
-        hud.addChild(windLabel)
+        comboLabel = westernLabel("", 20, UIColor(red: 1.0, green: 0.85, blue: 0.3, alpha: 1))
+        comboLabel.position = pt(size.width / 2, size.height - 132)
+        comboLabel.zPosition = 100
+        addChild(comboLabel)
+
+        reloadLabel = westernLabel("RELOADING...", 22, UIColor.white)
+        reloadLabel.position = pt(size.width / 2, size.height * 0.60)
+        reloadLabel.zPosition = 100
+        reloadLabel.isHidden = true
+        addChild(reloadLabel)
 
         for i in 0..<6 {
-            let a = SKSpriteNode(texture: ShArt.cartridge, size: CGSize(width: 8 * u, height: 24 * u))
-            a.position = CGPoint(x: W - 22 * u - CGFloat(i) * 14 * u, y: H - 130 * u)
-            hud.addChild(a)
-            ammoIcons.append(a)
+            let b = SKSpriteNode(color: UIColor(red: 0.88, green: 0.68, blue: 0.22, alpha: 1), size: CGSize(width: 9, height: 24))
+            b.anchorPoint = CGPoint(x: 0, y: 0)
+            b.position = pt(18 + CGFloat(i) * 15, 40)
+            b.zPosition = 100
+            addChild(b)
+            bullets.append(b)
         }
 
-        makeButton("fire", "FIRE", 46 * u, shc(0.85, 0.15, 0.1), CGPoint(x: W - 70 * u, y: 122 * u))
-        makeButton("hold", "HOLD\nBREATH", 34 * u, shc(0.15, 0.4, 0.75), CGPoint(x: W - 70 * u, y: 224 * u))
-        makeButton("reload", "RELOAD", 36 * u, shc(0.45, 0.35, 0.15), CGPoint(x: 70 * u, y: 122 * u))
-        makeButton("dead", "DEAD\nEYE", 34 * u, shc(0.7, 0.1, 0.1), CGPoint(x: 70 * u, y: 224 * u))
-
-        breathFill = makeBar(at: CGPoint(x: W - 70 * u, y: 224 * u + 34 * u + 12 * u), color: shc(0.35, 0.7, 1))
-        deadFill = makeBar(at: CGPoint(x: 70 * u, y: 224 * u + 34 * u + 12 * u), color: shc(1, 0.25, 0.2))
-
-        // intro
-        let t1 = shLabel("DEAD SHOT", 46 * u, shc(1, 0.9, 0.6))
-        t1.position = CGPoint(x: W / 2, y: H * 0.68)
-        let t2 = shLabel("watch the wind  •  hold breath  •  Dead Eye", 14 * u, shc(1, 1, 1))
-        t2.position = CGPoint(x: W / 2, y: H * 0.68 - 36 * u)
-        introNode.addChild(t1)
-        introNode.addChild(t2)
-        introNode.zPosition = 950
-        hud.addChild(introNode)
+        reloadBtn = SKShapeNode(rectOf: CGSize(width: 84, height: 36), cornerRadius: 10)
+        reloadBtn.fillColor = UIColor(white: 0, alpha: 0.45)
+        reloadBtn.strokeColor = UIColor(white: 1, alpha: 0.7)
+        reloadBtn.lineWidth = 2
+        reloadBtn.position = pt(size.width - 56, 52)
+        reloadBtn.zPosition = 100
+        let rl = westernLabel("RELOAD", 14, UIColor.white)
+        rl.verticalAlignmentMode = .center
+        reloadBtn.addChild(rl)
+        addChild(reloadBtn)
     }
 
-    // MARK: projection & ballistics
-
-    private func project(_ x: CGFloat, _ y: CGFloat, _ z: CGFloat) -> CGPoint {
-        return CGPoint(x: W / 2 + f * x / z, y: horizonY - f * (camH - y) / z)
-    }
-
-    private func groundY(_ z: CGFloat) -> CGFloat {
-        return horizonY - f * camH / z
-    }
-
-    private func tof(_ z: CGFloat) -> CGFloat {
-        return (exp(kDrag * z) - 1) / (kDrag * v0)
-    }
-
-    private func depth(at t: CGFloat) -> CGFloat {
-        return log(1 + kDrag * v0 * t) / kDrag
-    }
-
-    // bullet height relative to line of sight (m); negative = below
-    private func holdM(_ z: CGFloat) -> CGFloat {
-        let t = tof(z)
-        let tz = tof(zeroDist)
-        return 0.5 * grav * (tz * tz * z / zeroDist - t * t)
-    }
-
-    private func driftM(_ z: CGFloat) -> CGFloat {
-        let lag = tof(z) - z / v0
-        return wind * lag * 0.9
-    }
-
-    private func bulletScreen(_ z: CGFloat, _ aim: CGPoint) -> CGPoint {
-        return CGPoint(x: aim.x + f * driftM(z) / z, y: aim.y + f * holdM(z) / z)
+    func updateHUD() {
+        scoreLabel.text = "\(score)"
+        timerLabel.text = "\(Int(ceil(timeLeft)))"
+        if combo >= 3 {
+            comboLabel.text = "COMBO x\(min(5, 1 + combo / 3))"
+        } else {
+            comboLabel.text = ""
+        }
+        for i in 0..<bullets.count {
+            bullets[i].alpha = i < ammo ? 1.0 : 0.18
+        }
     }
 
     // MARK: game flow
 
-    private func startGame() {
-        for t in targets { removeTargetNodes(t, delay: 0) }
+    func newGame() {
+        removeAllActions()
+        for t in targets {
+            t.node.removeFromParent()
+            t.cover?.removeFromParent()
+        }
         targets.removeAll()
-        for b in bullets { b.node.removeFromParent() }
-        bullets.removeAll()
-        for p in particles { p.node.removeFromParent() }
-        particles.removeAll()
-        clearMarks()
-        removeAction(forKey: "exec")
-        executing = false
-        overNode?.removeFromParent()
-        overNode = nil
-        overReady = false
-        respawn.removeAll()
-
+        occupied.removeAll()
+        overlay?.removeFromParent()
+        overlay = nil
         score = 0
         combo = 0
-        shots = 0
-        hits = 0
         ammo = 6
-        timeLeft = 90
         reloading = false
-        reloadTimer = 0
-        reloadPose = 0
-        breath = 1
-        exhausted = false
-        holding = false
-        deadMeter = 0.5
-        setDead(false)
-        nextClay = 3
-        kick = .zero
-        recoil = 0
-
-        for _ in 0..<7 { spawnStatic() }
-        updateAmmoHUD()
-        phase = .intro
-        phaseTimer = 2.2
-        introNode.removeAllActions()
-        introNode.alpha = 1
+        timeLeft = 60
+        spawnTimer = 0.6
+        over = false
+        lastTime = 0
+        gun.zRotation = 0
+        gunBody.removeAllActions()
+        gunBody.position = CGPoint.zero
+        gunBody.zRotation = 0
+        reloadLabel.isHidden = true
+        updateHUD()
     }
 
-    private func endGame() {
-        phase = .over
-        setDead(false)
-        holding = false
-        clearMarks()
-        let best = max(UserDefaults.standard.integer(forKey: "shootBest"), score)
-        UserDefaults.standard.set(best, forKey: "shootBest")
-
-        let n = SKNode()
-        n.zPosition = 960
-        let dim = SKSpriteNode(color: shc(0, 0, 0, 0.62), size: size)
-        dim.position = CGPoint(x: W / 2, y: H / 2)
-        n.addChild(dim)
-        let t1 = shLabel("TIME'S UP", 44 * u, shc(1, 0.85, 0.45))
-        t1.position = CGPoint(x: W / 2, y: H * 0.64)
-        let t2 = shLabel("SCORE  \(score)", 30 * u, shc(1, 1, 1))
-        t2.position = CGPoint(x: W / 2, y: H * 0.56)
-        let t3 = shLabel("BEST  \(best)", 20 * u, shc(1, 0.8, 0.4))
-        t3.position = CGPoint(x: W / 2, y: H * 0.51)
-        let acc = shots > 0 ? Int(Double(hits) / Double(shots) * 100) : 0
-        let t4 = shLabel("HITS \(hits)/\(shots)   ACCURACY \(acc)%", 15 * u, shc(0.9, 0.9, 0.9))
-        t4.position = CGPoint(x: W / 2, y: H * 0.46)
-        let t5 = shLabel("tap to play again", 18 * u, shc(0.8, 0.8, 0.8))
-        t5.position = CGPoint(x: W / 2, y: H * 0.38)
-        t5.run(.repeatForever(.sequence([.fadeAlpha(to: 0.3, duration: 0.7), .fadeAlpha(to: 1, duration: 0.7)])))
-        for l in [t1, t2, t3, t4, t5] { n.addChild(l) }
-        hud.addChild(n)
-        overNode = n
-        run(.sequence([.wait(forDuration: 0.9), .run { [weak self] in self?.overReady = true }]))
-    }
-
-    // MARK: targets
-
-    private func randomSpot() -> (CGFloat, CGFloat) {
-        for _ in 0..<25 {
-            let z = CGFloat.random(in: 8...30)
-            let half = (W / 2) / f * z * 0.85
-            let x = CGFloat.random(in: -half...half)
-            let p = project(x, 1, z)
-            var ok = true
-            for t in targets where t.alive && t.isStatic {
-                let q = project(t.x, 1, t.z)
-                if hypot(q.x - p.x, q.y - p.y) < 34 * u { ok = false; break }
-            }
-            if ok { return (x, z) }
+    func endGame() {
+        over = true
+        overDate = Date()
+        let best = max(score, UserDefaults.standard.integer(forKey: "bestShoot"))
+        UserDefaults.standard.set(best, forKey: "bestShoot")
+        let rank: String
+        if score >= 600 {
+            rank = "Legend of the West"
+        } else if score >= 350 {
+            rank = "Gunslinger"
+        } else if score >= 150 {
+            rank = "Deputy"
+        } else {
+            rank = "Greenhorn"
         }
-        return (0, 15)
+
+        let o = SKNode()
+        o.zPosition = 200
+        let dim = SKSpriteNode(color: UIColor(white: 0, alpha: 0.72), size: size)
+        dim.position = pt(size.width / 2, size.height / 2)
+        o.addChild(dim)
+
+        let t1 = westernLabel("TIME'S UP", 40, UIColor.white)
+        t1.position = pt(size.width / 2, size.height * 0.62)
+        o.addChild(t1)
+        let t2 = westernLabel(rank, 24, UIColor(red: 1.0, green: 0.85, blue: 0.3, alpha: 1))
+        t2.position = pt(size.width / 2, size.height * 0.56)
+        o.addChild(t2)
+        let t3 = westernLabel("Score: \(score)", 28, UIColor.white)
+        t3.position = pt(size.width / 2, size.height * 0.50)
+        o.addChild(t3)
+        let t4 = westernLabel("Best: \(best)", 22, UIColor.lightGray)
+        t4.position = pt(size.width / 2, size.height * 0.45)
+        o.addChild(t4)
+        let t5 = westernLabel("tap to play again", 20, UIColor.lightGray)
+        t5.position = pt(size.width / 2, size.height * 0.38)
+        o.addChild(t5)
+
+        addChild(o)
+        overlay = o
     }
 
-    private func spawnStatic() {
-        let kinds: [ShTarget.Kind] = [.bottle, .bottle, .can, .can, .plate]
-        let kind = kinds.randomElement()!
-        let (x, z) = randomSpot()
-        let y = CGFloat.random(in: 0.7...1.1)
-        addTarget(kind, x: x, y: y, z: z)
-    }
+    // MARK: spawning
 
-    @discardableResult
-    private func addTarget(_ kind: ShTarget.Kind, x: CGFloat, y: CGFloat, z: CGFloat) -> ShTarget {
-        let t = ShTarget(kind: kind, x: x, y: y, z: z)
-        let tex: SKTexture
-        switch kind {
-        case .bottle: tex = ShArt.bottle
-        case .can: tex = ShArt.can
-        case .plate: tex = ShArt.plate
-        case .clay: tex = ShArt.clay
-        }
-        let n = SKSpriteNode(texture: tex)
-        n.anchorPoint = kind == .clay ? CGPoint(x: 0.5, y: 0.5) : CGPoint(x: 0.5, y: 0)
-        n.color = shc(0.93, 0.72, 0.55)
-        n.colorBlendFactor = min(0.45, z / 75)
-        n.zPosition = 500 - z
-        root.addChild(n)
-        t.node = n
-        if kind != .clay {
-            let post = SKSpriteNode(color: shc(0.38, 0.24, 0.12), size: .zero)
-            post.anchorPoint = CGPoint(x: 0.5, y: 0)
-            post.zPosition = 500 - z - 0.1
-            root.addChild(post)
-            t.stand = post
-            let sh = SKSpriteNode(texture: ShArt.soft, size: .zero)
-            sh.color = .black
-            sh.colorBlendFactor = 1
-            sh.alpha = 0.35
-            sh.zPosition = 500 - z - 0.2
-            root.addChild(sh)
-            t.shadow = sh
-        }
-        layout(t)
-        targets.append(t)
-        return t
-    }
-
-    private func layout(_ t: ShTarget) {
-        let s = f / t.z
-        t.node.size = CGSize(width: t.wM * s, height: t.hM * s)
-        t.node.position = project(t.x, t.y, t.z)
-        if let post = t.stand {
-            post.size = CGSize(width: max(1.5, 0.16 * s), height: max(1, t.y * s))
-            post.position = project(t.x, 0, t.z)
-        }
-        if let sh = t.shadow {
-            sh.size = CGSize(width: 0.6 * s, height: 0.14 * s)
-            sh.position = project(t.x, 0, t.z)
-        }
-    }
-
-    private func removeTargetNodes(_ t: ShTarget, delay: Double) {
-        t.node.removeFromParent()
-        t.mark?.removeFromParent()
-        t.mark = nil
-        for n in [t.stand, t.shadow] {
-            guard let n = n else { continue }
-            if delay <= 0 {
-                n.removeFromParent()
-            } else {
-                n.run(.sequence([.wait(forDuration: delay), .fadeOut(withDuration: 0.4), .removeFromParent()]))
-            }
-        }
-    }
-
-    private func spawnClay() {
-        let z = CGFloat.random(in: 14...24)
-        let half = (W / 2) / f * z
-        let side: CGFloat = Bool.random() ? -1 : 1
-        let t = addTarget(.clay, x: side * half * 1.1, y: 0.6, z: z)
-        t.vx = -side * CGFloat.random(in: 2.5...4.2)
-        t.vy = CGFloat.random(in: 8...11)
-        t.spin = CGFloat.random(in: 6...12)
-    }
-
-    // MARK: input
-
-    private func buttonName(at p: CGPoint) -> String? {
-        var best: String?
-        var bestD = CGFloat.greatestFiniteMagnitude
-        for (name, b) in buttons {
-            let d = hypot(b.position.x - p.x, b.position.y - p.y)
-            if d <= (buttonR[name] ?? 40) * 1.2 && d < bestD {
-                best = name
-                bestD = d
-            }
-        }
-        return best
-    }
-
-    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
-        for t in touches {
-            let p = t.location(in: self)
-            if phase == .over {
-                if overReady { startGame() }
-                return
-            }
-            if let name = buttonName(at: p) {
-                buttonTouches[t] = name
-                press(name, down: true)
-            } else {
-                aimTouches[t] = ShAimTouch(last: p, start: p, time: t.timestamp, travel: 0)
-            }
-        }
-    }
-
-    override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
-        for t in touches {
-            guard var a = aimTouches[t] else { continue }
-            let p = t.location(in: self)
-            let dx = p.x - a.last.x
-            let dy = p.y - a.last.y
-            a.travel += hypot(dx, dy)
-            a.last = p
-            aimTouches[t] = a
-            let sens: CGFloat = 1.35
-            aimBase.x = min(max(aimBase.x + dx * sens, 12 * u), W - 12 * u)
-            aimBase.y = min(max(aimBase.y + dy * sens, H * 0.22), H * 0.9)
-        }
-    }
-
-    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
-        for t in touches {
-            if let name = buttonTouches[t] {
-                press(name, down: false)
-                buttonTouches[t] = nil
-            }
-            if let a = aimTouches[t] {
-                if deadActive && a.travel < 12 && t.timestamp - a.time < 0.35 {
-                    markTarget(at: a.start)
-                }
-                aimTouches[t] = nil
-            }
-        }
-    }
-
-    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
-        for t in touches {
-            if let name = buttonTouches[t] {
-                press(name, down: false)
-                buttonTouches[t] = nil
-            }
-            aimTouches[t] = nil
-        }
-    }
-
-    private func press(_ name: String, down: Bool) {
-        buttons[name]?.setScale(down ? 0.92 : 1.0)
-        switch name {
-        case "fire": if down { fire() }
-        case "reload": if down { startReload() }
-        case "hold": holding = down
-        case "dead": if down { toggleDead() }
-        default: break
-        }
-    }
-
-    // MARK: Dead Eye
-
-    private func toggleDead() {
-        guard phase == .play, !executing else { return }
-        if deadActive {
-            setDead(false)
-        } else if deadMeter >= 0.2 {
-            setDead(true)
-        }
-    }
-
-    private func setDead(_ on: Bool) {
-        deadActive = on
-        if !on { clearMarks() }
-        deadOverlay.removeAction(forKey: "fade")
-        deadOverlay.run(.fadeAlpha(to: on ? 0.4 : 0, duration: 0.25), withKey: "fade")
-        crossShape.strokeColor = on ? shc(1, 0.2, 0.15, 0.95) : shc(1, 1, 1, 0.92)
-    }
-
-    private func clearMarks() {
-        for t in marks {
-            t.mark?.removeFromParent()
-            t.mark = nil
-        }
-        marks.removeAll()
-    }
-
-    private func markTarget(at p: CGPoint) {
-        guard deadActive, !executing, phase == .play, marks.count < ammo else { return }
-        var best: ShTarget?
-        var bestD = CGFloat.greatestFiniteMagnitude
-        for t in targets where t.alive && !marks.contains(where: { $0 === t }) {
-            let c = project(t.x, t.centerY, t.z)
-            let d = hypot(c.x - p.x, c.y - p.y)
-            let r = max(40 * u, f * max(t.hM, t.wM) / t.z)
-            if d < r && d < bestD {
-                best = t
-                bestD = d
-            }
-        }
-        guard let t = best else { return }
-        marks.append(t)
-        let m = SKShapeNode()
-        let path = CGMutablePath()
-        let r = 11 * u
-        path.move(to: CGPoint(x: -r, y: -r)); path.addLine(to: CGPoint(x: r, y: r))
-        path.move(to: CGPoint(x: -r, y: r)); path.addLine(to: CGPoint(x: r, y: -r))
-        m.path = path
-        m.strokeColor = shc(0.95, 0.15, 0.1)
-        m.lineWidth = 3.5 * u
-        m.lineCap = .round
-        m.zPosition = 905
-        m.setScale(2.2)
-        m.alpha = 0
-        root.addChild(m)
-        m.run(.group([.scale(to: 1, duration: 0.12), .fadeIn(withDuration: 0.12)]))
-        t.mark = m
-        hapLight.impactOccurred()
-        ShSFX.shared.click()
-    }
-
-    private func executeMarks() {
-        let list = marks.filter { $0.alive }
-        marks.removeAll()
-        if list.isEmpty {
-            shoot(at: aimShown, perfect: false)
+    func spawnTarget() {
+        if Int.random(in: 0..<100) < 18 {
+            spawnPigeon()
             return
         }
-        executing = true
-        var seq: [SKAction] = []
-        for t in list {
-            seq.append(SKAction.run { [weak self] in self?.fireAtMarked(t) })
-            seq.append(SKAction.wait(forDuration: 0.1))
+        let row = Int.random(in: 0..<3)
+        let slot = Int.random(in: 0..<slotCount)
+        let key = row * 10 + slot
+        if occupied.contains(key) { return }
+        occupied.insert(key)
+        let s = rowScale[row]
+        let y = rowY[row]
+        let x = size.width * (0.12 + 0.19 * CGFloat(slot)) + CGFloat.random(in: -6...6)
+        let roll = Int.random(in: 0..<100)
+        let rowZ = CGFloat(10 + row * 10)
+        let t: GTarget
+        if roll < 30 {
+            let n = makeBottleNode()
+            n.position = pt(x, y)
+            n.setScale(s)
+            n.zPosition = rowZ + 1
+            world.addChild(n)
+            t = GTarget(node: n, kind: .bottle, w: 18, h: 62, life: CGFloat.random(in: 2.2...3.5), key: key)
+        } else if roll < 55 {
+            let n = makeCanNode()
+            n.position = pt(x, y)
+            n.setScale(s)
+            n.zPosition = rowZ + 1
+            world.addChild(n)
+            t = GTarget(node: n, kind: .can, w: 24, h: 31, life: CGFloat.random(in: 2.2...3.5), key: key)
+        } else {
+            let sheriff = roll >= 85
+            let n = makeOutlawNode(sheriff: sheriff)
+            n.setScale(s)
+            n.position = pt(x, y - 100 * s)
+            n.zPosition = rowZ + 1
+            world.addChild(n)
+            let cover = makeCrateNode()
+            cover.setScale(s)
+            cover.position = pt(x, y)
+            cover.zPosition = rowZ + 2
+            world.addChild(cover)
+            let rise = SKAction.moveTo(y: y, duration: 0.22)
+            rise.timingMode = .easeOut
+            n.run(rise)
+            t = GTarget(node: n, kind: sheriff ? .sheriff : .bandit, w: 56, h: 104, life: CGFloat.random(in: 1.3...2.0), key: key)
+            t.cover = cover
         }
-        seq.append(SKAction.run { [weak self] in
-            guard let self = self else { return }
-            self.executing = false
-            self.setDead(false)
-        })
-        run(SKAction.sequence(seq), withKey: "exec")
+        targets.append(t)
     }
 
-    private func fireAtMarked(_ t: ShTarget) {
-        t.mark?.removeFromParent()
-        t.mark = nil
-        guard t.alive, ammo > 0, phase == .play else { return }
-        let tt = tof(t.z)
-        let px = t.x + t.vx * tt
-        var py = t.centerY + t.vy * tt
-        if t.kind == .clay { py -= 0.5 * grav * tt * tt }
-        let c = project(px, py, t.z)
-        let aim = CGPoint(x: c.x - f * driftM(t.z) / t.z, y: c.y - f * holdM(t.z) / t.z)
-        execAim = aim
-        shoot(at: aim, perfect: true)
+    func spawnPigeon() {
+        let fromLeft = Bool.random()
+        let y = CGFloat.random(in: (size.height * 0.58)...(size.height * 0.80))
+        let s = CGFloat.random(in: 0.8...1.2)
+        let n = makePigeonNode()
+        n.setScale(s)
+        n.position = pt(fromLeft ? -30 : size.width + 30, y)
+        n.zPosition = 40
+        world.addChild(n)
+        let t = GTarget(node: n, kind: .pigeon, w: 44, h: 14, life: 10, key: -1)
+        t.vx = (fromLeft ? 1 : -1) * CGFloat.random(in: 150...230)
+        t.vy = CGFloat.random(in: 10...50)
+        targets.append(t)
     }
 
     // MARK: shooting
 
-    private func fire() {
-        guard phase == .play, !executing else { return }
-        if reloading { return }
-        if ammo <= 0 {
-            ShSFX.shared.click()
+    func hitTest(_ p: CGPoint, _ t: GTarget) -> Bool {
+        let s = t.node.xScale
+        let n = t.node.position
+        if t.kind == .pigeon {
+            return hypot(p.x - n.x, p.y - n.y) < 30 * s + 8
+        }
+        let pad: CGFloat = 10
+        if abs(p.x - n.x) > t.w * s / 2 + pad { return false }
+        var low = n.y - pad
+        if t.kind == .bandit || t.kind == .sheriff {
+            low = n.y + 36 * s
+        }
+        return p.y >= low && p.y <= n.y + t.h * s + pad
+    }
+
+    func fire(at p: CGPoint) {
+        if ammo <= 0 || reloading || over { return }
+        ammo -= 1
+        aimGun(at: p)
+        muzzleFlash()
+        recoil()
+        shake()
+        tracer(to: p)
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+
+        var best: GTarget?
+        for t in targets {
+            if t.hit || !hitTest(p, t) { continue }
+            if let b = best, t.node.zPosition <= b.node.zPosition { continue }
+            best = t
+        }
+        if let b = best {
+            hitTarget(b, at: p)
+        } else {
+            missAt(p)
+        }
+        updateHUD()
+        if ammo == 0 {
+            startReload()
+        }
+    }
+
+    func aimGun(at p: CGPoint) {
+        let dx = p.x - gun.position.x
+        let dy = max(40, p.y - gun.position.y)
+        var ang = -atan2(dx, dy)
+        ang = max(-0.5, min(0.5, ang))
+        gun.zRotation = ang
+    }
+
+    func recoil() {
+        gunBody.removeAllActions()
+        let kick = SKAction.group([
+            SKAction.moveBy(x: 0, y: -18, duration: 0.04),
+            SKAction.rotate(toAngle: 0.07, duration: 0.04)
+        ])
+        let back = SKAction.group([
+            SKAction.move(to: CGPoint.zero, duration: 0.14),
+            SKAction.rotate(toAngle: 0, duration: 0.14)
+        ])
+        gunBody.run(SKAction.sequence([kick, back]))
+    }
+
+    func shake() {
+        world.removeAllActions()
+        world.position = CGPoint.zero
+        world.run(SKAction.sequence([
+            SKAction.moveBy(x: 4, y: 5, duration: 0.03),
+            SKAction.moveBy(x: -8, y: -10, duration: 0.03),
+            SKAction.moveBy(x: 4, y: 5, duration: 0.03)
+        ]))
+    }
+
+    func muzzleFlash() {
+        let f = SKNode()
+        let outer = poly(starPoints(pt(0, 0), 46, 16), UIColor(red: 1.0, green: 0.55, blue: 0.10, alpha: 0.9))
+        outer.blendMode = .add
+        let mid = poly(starPoints(pt(0, 0), 32, 11), UIColor(red: 1.0, green: 0.85, blue: 0.30, alpha: 1))
+        mid.blendMode = .add
+        let core = SKShapeNode(circleOfRadius: 12)
+        core.fillColor = UIColor.white
+        core.strokeColor = UIColor.clear
+        f.addChild(outer)
+        f.addChild(mid)
+        f.addChild(core)
+        f.zRotation = CGFloat.random(in: 0..<(2 * CGFloat.pi))
+        f.setScale(0.4)
+        muzzle.addChild(f)
+        f.run(SKAction.sequence([
+            SKAction.scale(to: 1.1, duration: 0.04),
+            SKAction.fadeOut(withDuration: 0.06),
+            SKAction.removeFromParent()
+        ]))
+
+        let mp = muzzle.convert(CGPoint.zero, to: self)
+        for _ in 0..<5 {
+            let sm = SKShapeNode(circleOfRadius: CGFloat.random(in: 6...11))
+            sm.fillColor = UIColor(white: 0.85, alpha: 0.45)
+            sm.strokeColor = UIColor.clear
+            sm.position = mp
+            sm.zPosition = 79
+            addChild(sm)
+            sm.run(SKAction.sequence([
+                SKAction.group([
+                    SKAction.moveBy(x: CGFloat.random(in: -25...25), y: CGFloat.random(in: 30...80), duration: 0.9),
+                    SKAction.scale(to: 3.5, duration: 0.9),
+                    SKAction.fadeOut(withDuration: 0.9)
+                ]),
+                SKAction.removeFromParent()
+            ]))
+        }
+
+        let flash = SKSpriteNode(color: UIColor.white, size: size)
+        flash.position = pt(size.width / 2, size.height / 2)
+        flash.zPosition = 95
+        flash.alpha = 0.18
+        addChild(flash)
+        flash.run(SKAction.sequence([SKAction.fadeOut(withDuration: 0.1), SKAction.removeFromParent()]))
+    }
+
+    func tracer(to p: CGPoint) {
+        let from = muzzle.convert(CGPoint.zero, to: self)
+        let l = lineNode(from, p, UIColor(red: 1.0, green: 0.90, blue: 0.60, alpha: 0.8), 2)
+        l.zPosition = 70
+        addChild(l)
+        l.run(SKAction.sequence([SKAction.fadeOut(withDuration: 0.1), SKAction.removeFromParent()]))
+    }
+
+    func startReload() {
+        if reloading || ammo == 6 { return }
+        reloading = true
+        reloadLabel.isHidden = false
+        gunBody.removeAllActions()
+        gunBody.run(SKAction.sequence([
+            SKAction.moveBy(x: 0, y: -40, duration: 0.2),
+            SKAction.wait(forDuration: 0.7),
+            SKAction.move(to: CGPoint.zero, duration: 0.2)
+        ]))
+        after(1.1) {
+            self.ammo = 6
+            self.reloading = false
+            self.reloadLabel.isHidden = true
+            self.updateHUD()
+        }
+    }
+
+    // MARK: hits and effects
+
+    func registerHit(_ pts: Int, at p: CGPoint) {
+        if pts < 0 {
+            combo = 0
+            score = max(0, score + pts)
+            popup("\(pts)", at: p, color: UIColor.red)
+            return
+        }
+        combo += 1
+        let mult = min(5, 1 + combo / 3)
+        let gained = pts * mult
+        score += gained
+        popup(mult > 1 ? "+\(gained) x\(mult)" : "+\(gained)", at: p, color: UIColor.yellow)
+    }
+
+    func hitTarget(_ t: GTarget, at p: CGPoint) {
+        t.hit = true
+        targets.removeAll(where: { $0 === t })
+        occupied.remove(t.key)
+        let s = t.node.xScale
+        let np = t.node.position
+        switch t.kind {
+        case .bottle:
+            shatter(at: CGPoint(x: np.x, y: np.y + 30 * s), color: UIColor(red: 0.2, green: 0.7, blue: 0.3, alpha: 0.9), count: 12, size: 7 * s)
+            t.node.removeFromParent()
+            registerHit(10, at: p)
+        case .can:
+            let up = SKAction.moveBy(x: CGFloat.random(in: -50...50), y: 100, duration: 0.25)
+            up.timingMode = .easeOut
+            let down = SKAction.moveBy(x: 0, y: -260, duration: 0.35)
+            down.timingMode = .easeIn
+            t.node.run(SKAction.sequence([
+                SKAction.group([SKAction.sequence([up, down]), SKAction.rotate(byAngle: 9, duration: 0.6)]),
+                SKAction.removeFromParent()
+            ]))
+            shatter(at: p, color: UIColor(red: 1.0, green: 0.9, blue: 0.5, alpha: 1), count: 6, size: 4 * s)
+            registerHit(5, at: p)
+        case .bandit, .sheriff:
+            let drop = SKAction.moveBy(x: 0, y: -t.h * s, duration: 0.2)
+            drop.timingMode = .easeIn
+            t.node.run(SKAction.sequence([drop, SKAction.removeFromParent()]))
+            t.cover?.run(SKAction.sequence([SKAction.wait(forDuration: 0.3), SKAction.removeFromParent()]))
+            shatter(at: p, color: UIColor(red: 0.5, green: 0.33, blue: 0.17, alpha: 1), count: 8, size: 5 * s)
+            registerHit(t.kind == .bandit ? 25 : -30, at: p)
+        case .pigeon:
+            shatter(at: np, color: UIColor(red: 1.0, green: 0.5, blue: 0.1, alpha: 1), count: 14, size: 6 * s)
+            t.node.removeFromParent()
+            registerHit(15, at: p)
+        }
+    }
+
+    func despawn(_ t: GTarget) {
+        occupied.remove(t.key)
+        let s = t.node.xScale
+        switch t.kind {
+        case .bandit, .sheriff:
+            let drop = SKAction.moveBy(x: 0, y: -t.h * s, duration: 0.22)
+            drop.timingMode = .easeIn
+            t.node.run(SKAction.sequence([drop, SKAction.removeFromParent()]))
+            t.cover?.run(SKAction.sequence([SKAction.wait(forDuration: 0.3), SKAction.removeFromParent()]))
+        case .bottle, .can:
+            t.node.run(SKAction.sequence([SKAction.fadeOut(withDuration: 0.25), SKAction.removeFromParent()]))
+        case .pigeon:
+            t.node.removeFromParent()
+        }
+    }
+
+    func missAt(_ p: CGPoint) {
+        combo = 0
+        if p.y < horizonY - 10 {
+            dustPuff(at: p)
+            let h = SKShapeNode(circleOfRadius: 3)
+            h.fillColor = UIColor(white: 0.05, alpha: 0.9)
+            h.strokeColor = UIColor(white: 0, alpha: 0.35)
+            h.lineWidth = 2
+            h.position = p
+            h.zPosition = 2
+            world.addChild(h)
+            h.run(SKAction.sequence([
+                SKAction.wait(forDuration: 3),
+                SKAction.fadeOut(withDuration: 1),
+                SKAction.removeFromParent()
+            ]))
+        }
+    }
+
+    func dustPuff(at p: CGPoint) {
+        for _ in 0..<7 {
+            let d = SKShapeNode(circleOfRadius: CGFloat.random(in: 4...9))
+            d.fillColor = UIColor(red: 0.85, green: 0.65, blue: 0.45, alpha: 0.7)
+            d.strokeColor = UIColor.clear
+            d.position = p
+            d.zPosition = 48
+            world.addChild(d)
+            d.run(SKAction.sequence([
+                SKAction.group([
+                    SKAction.moveBy(x: CGFloat.random(in: -30...30), y: CGFloat.random(in: 10...40), duration: 0.5),
+                    SKAction.scale(to: 2.5, duration: 0.5),
+                    SKAction.fadeOut(withDuration: 0.5)
+                ]),
+                SKAction.removeFromParent()
+            ]))
+        }
+    }
+
+    func shatter(at p: CGPoint, color: UIColor, count: Int, size sz: CGFloat) {
+        for _ in 0..<count {
+            let s = poly([pt(0, 0), pt(sz, sz * 0.3), pt(sz * 0.3, sz)], color)
+            s.position = p
+            s.zPosition = 50
+            world.addChild(s)
+            let ang = CGFloat.random(in: 0..<(2 * CGFloat.pi))
+            let sp = CGFloat.random(in: 40...140)
+            let dx = cos(ang) * sp
+            let dy = sin(ang) * sp + 60
+            let up = SKAction.moveBy(x: dx * 0.5, y: dy, duration: 0.22)
+            up.timingMode = .easeOut
+            let down = SKAction.moveBy(x: dx * 0.5, y: -dy * 1.6, duration: 0.3)
+            down.timingMode = .easeIn
+            s.run(SKAction.sequence([
+                SKAction.group([
+                    SKAction.sequence([up, down]),
+                    SKAction.rotate(byAngle: CGFloat.random(in: -8...8), duration: 0.52),
+                    SKAction.fadeOut(withDuration: 0.52)
+                ]),
+                SKAction.removeFromParent()
+            ]))
+        }
+    }
+
+    func popup(_ text: String, at p: CGPoint, color: UIColor) {
+        let l = westernLabel(text, 26, color)
+        l.position = p
+        l.zPosition = 60
+        addChild(l)
+        l.run(SKAction.sequence([
+            SKAction.group([SKAction.moveBy(x: 0, y: 60, duration: 0.7), SKAction.fadeOut(withDuration: 0.7)]),
+            SKAction.removeFromParent()
+        ]))
+    }
+
+    // MARK: input and loop
+
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        guard let touch = touches.first else { return }
+        if over {
+            if Date().timeIntervalSince(overDate) > 0.7 {
+                newGame()
+            }
+            return
+        }
+        let p = touch.location(in: self)
+        if reloadBtn.contains(p) {
             startReload()
             return
         }
-        if deadActive {
-            executeMarks()
-        } else {
-            shoot(at: aimShown, perfect: false)
-        }
+        fire(at: p)
     }
-
-    private func muzzlePoint() -> CGPoint {
-        return gun.convert(CGPoint(x: 0, y: 350), to: root)
-    }
-
-    private func shoot(at aim: CGPoint, perfect: Bool) {
-        guard ammo > 0 else { return }
-        ammo -= 1
-        shots += 1
-        updateAmmoHUD()
-        ShSFX.shared.shot()
-        hapHeavy.impactOccurred()
-
-        let m = muzzlePoint()
-        muzzleFX(at: m)
-        recoil = 1
-        recoilDir = Bool.random() ? 1 : -1
-        shake = min(shake + 7 * u, 12 * u)
-        if !perfect {
-            kick.x += CGFloat.random(in: -7...7) * u
-            kick.y += 34 * u
-        }
-        cylinder.run(.rotate(byAngle: -CGFloat.pi / 3, duration: 0.08))
-
-        let tr = SKSpriteNode(color: shc(1, 0.85, 0.4), size: CGSize(width: 2.6 * u, height: 18 * u))
-        tr.blendMode = .add
-        tr.zPosition = 600
-        let glow = SKSpriteNode(texture: ShArt.soft, size: CGSize(width: 14 * u, height: 14 * u))
-        glow.color = shc(1, 0.7, 0.25)
-        glow.colorBlendFactor = 1
-        glow.blendMode = .add
-        tr.addChild(glow)
-        tr.position = m
-        root.addChild(tr)
-        bullets.append(ShBullet(aim: aim, muzzle: m, node: tr))
-    }
-
-    private func muzzleFX(at m: CGPoint) {
-        let fl = SKSpriteNode(texture: ShArt.flash)
-        let s = 120 * u * CGFloat.random(in: 0.85...1.2)
-        fl.size = CGSize(width: s, height: s)
-        fl.position = m
-        fl.zRotation = CGFloat.random(in: 0...(2 * CGFloat.pi))
-        fl.blendMode = .add
-        fl.zPosition = 710
-        root.addChild(fl)
-        fl.run(.sequence([.group([.scale(to: 1.5, duration: 0.07), .fadeOut(withDuration: 0.07)]),
-                          .removeFromParent()]))
-        for _ in 0..<5 {
-            let sm = SKSpriteNode(texture: ShArt.soft, size: CGSize(width: 28 * u, height: 28 * u))
-            sm.color = shc(0.88, 0.88, 0.88)
-            sm.colorBlendFactor = 1
-            sm.alpha = 0.55
-            sm.position = CGPoint(x: m.x + CGFloat.random(in: -6...6) * u, y: m.y + CGFloat.random(in: -4...8) * u)
-            sm.zPosition = 705
-            root.addChild(sm)
-            let d = Double.random(in: 1.0...1.8)
-            let dx = wind * 7 * u + CGFloat.random(in: -12...12) * u
-            let dy = CGFloat.random(in: 25...60) * u
-            sm.run(.sequence([.group([.moveBy(x: dx, y: dy, duration: d),
-                                      .scale(to: CGFloat.random(in: 2.5...4), duration: d),
-                                      .fadeOut(withDuration: d)]),
-                              .removeFromParent()]))
-        }
-    }
-
-    private func startReload() {
-        guard phase == .play, !reloading, ammo < 6, !executing else { return }
-        if deadActive { setDead(false) }
-        reloading = true
-        reloadTimer = 2.1
-        ShSFX.shared.click()
-        let spent = 6 - ammo
-        let c = gun.convert(CGPoint(x: 0, y: 150), to: root)
-        for _ in 0..<spent {
-            let n = SKSpriteNode(texture: ShArt.cartridge, size: CGSize(width: 7 * u, height: 21 * u))
-            n.position = CGPoint(x: c.x + CGFloat.random(in: -20...20) * u, y: c.y)
-            n.zPosition = 720
-            root.addChild(n)
-            particles.append(ShParticle(node: n, vx: CGFloat.random(in: -90...90) * u, vy: CGFloat.random(in: 20...120) * u,
-                                        spin: CGFloat.random(in: -10...10), g: 2200 * u, floorY: -200, life: 1.4))
-        }
-    }
-
-    // MARK: hits & effects
-
-    private func onHit(_ t: ShTarget, at p: CGPoint) {
-        t.alive = false
-        hits += 1
-        combo += 1
-        let mult = 1 + 0.25 * CGFloat(min(combo - 1, 8))
-        var base = 100
-        switch t.kind {
-        case .bottle: base = 100
-        case .can: base = 120
-        case .plate: base = 200
-        case .clay: base = 250
-        }
-        let pts = Int(CGFloat(base + Int(t.z) * 6) * mult)
-        score += pts
-        deadMeter = min(1, deadMeter + 0.14)
-
-        let c = project(t.x, t.centerY, t.z)
-        floatText("+\(pts)", at: CGPoint(x: c.x, y: c.y + 20 * u), color: shc(1, 0.9, 0.5), size: 20 * u)
-        hapLight.impactOccurred()
-
-        let vol = Float(max(0.3, 1 - t.z / 60))
-        switch t.kind {
-        case .bottle:
-            ShSFX.shared.glass(vol)
-            shatter(at: c, z: t.z, count: 16, colors: [shc(0.2, 0.7, 0.3), shc(0.5, 0.9, 0.6), shc(0.1, 0.4, 0.2), shc(0.95, 0.95, 0.9)],
-                    sizeM: 0.06, speedM: 4.5)
-        case .clay:
-            ShSFX.shared.thud(vol)
-            shatter(at: c, z: t.z, count: 12, colors: [shc(0.95, 0.45, 0.1), shc(1, 0.7, 0.3), shc(0.5, 0.18, 0.05)],
-                    sizeM: 0.07, speedM: 5)
-        case .can, .plate:
-            if t.kind == .can { ShSFX.shared.thud(vol) } else { ShSFX.shared.ping(vol) }
-            flingNode(t, from: c)
-        }
-        dust(at: c, z: t.z, count: 3, color: shc(0.9, 0.8, 0.65))
-        removeTargetNodes(t, delay: 1.2)
-        marks.removeAll { $0 === t }
-        if t.isStatic { respawn.append(CGFloat.random(in: 0.7...1.6)) }
-    }
-
-    private func flingNode(_ t: ShTarget, from c: CGPoint) {
-        let s = f / t.z
-        let n = SKSpriteNode(texture: t.kind == .can ? ShArt.can : ShArt.plate)
-        n.size = CGSize(width: t.wM * s, height: t.hM * s)
-        n.position = c
-        n.color = shc(0.93, 0.72, 0.55)
-        n.colorBlendFactor = min(0.45, t.z / 75)
-        n.zPosition = 500 - t.z + 0.5
-        root.addChild(n)
-        let vx = CGFloat.random(in: -2.5...2.5) * s
-        let vy = CGFloat.random(in: 3...6) * s
-        particles.append(ShParticle(node: n, vx: vx, vy: vy, spin: CGFloat.random(in: -12...12),
-                                    g: grav * s, floorY: groundY(t.z) + 2, life: 3.0))
-    }
-
-    private func shatter(at c: CGPoint, z: CGFloat, count: Int, colors: [UIColor], sizeM: CGFloat, speedM: CGFloat) {
-        let s = f / z
-        for _ in 0..<count {
-            let sz = max(2.5, sizeM * s * CGFloat.random(in: 0.4...1.3))
-            let n = SKSpriteNode(texture: ShArt.shard, color: colors.randomElement()!, size: CGSize(width: sz, height: sz))
-            n.colorBlendFactor = 1
-            n.position = CGPoint(x: c.x + CGFloat.random(in: -3...3), y: c.y + CGFloat.random(in: -3...3))
-            n.zRotation = CGFloat.random(in: 0...(2 * CGFloat.pi))
-            n.zPosition = 500 - z + 0.5
-            root.addChild(n)
-            let ang = CGFloat.random(in: 0...(2 * CGFloat.pi))
-            let spd = CGFloat.random(in: 0.3...1.0) * speedM * s
-            particles.append(ShParticle(node: n, vx: cos(ang) * spd, vy: sin(ang) * spd + 1.2 * s,
-                                        spin: CGFloat.random(in: -14...14), g: grav * s,
-                                        floorY: groundY(z) + CGFloat.random(in: -3...3), life: CGFloat.random(in: 1.8...2.8)))
-        }
-    }
-
-    private func dust(at p: CGPoint, z: CGFloat, count: Int, color: UIColor) {
-        let s = f / z
-        for _ in 0..<count {
-            let sz = max(8, 0.4 * s)
-            let n = SKSpriteNode(texture: ShArt.soft, size: CGSize(width: sz, height: sz))
-            n.color = color
-            n.colorBlendFactor = 1
-            n.alpha = 0.7
-            n.position = CGPoint(x: p.x + CGFloat.random(in: -sz * 0.3...sz * 0.3), y: p.y + CGFloat.random(in: 0...sz * 0.2))
-            n.zPosition = 500 - z + 0.6
-            root.addChild(n)
-            let d = Double.random(in: 0.6...1.1)
-            n.run(.sequence([.group([.moveBy(x: wind * 6 + CGFloat.random(in: -10...10), y: sz * CGFloat.random(in: 0.5...1.2), duration: d),
-                                     .scale(to: CGFloat.random(in: 2...3.2), duration: d),
-                                     .fadeOut(withDuration: d)]),
-                             .removeFromParent()]))
-        }
-    }
-
-    private func floatText(_ text: String, at p: CGPoint, color: UIColor, size: CGFloat) {
-        let l = shLabel(text, size, color)
-        l.position = p
-        l.zPosition = 950
-        root.addChild(l)
-        l.run(.sequence([.group([.moveBy(x: 0, y: 60 * u, duration: 1.0),
-                                 .sequence([.wait(forDuration: 0.5), .fadeOut(withDuration: 0.5)])]),
-                         .removeFromParent()]))
-    }
-
-    private func registerMiss() {
-        combo = 0
-    }
-
-    // MARK: per-frame update
 
     override func update(_ currentTime: TimeInterval) {
-        guard built else { return }
-        if lastTime == 0 { lastTime = currentTime }
-        let rdt = CGFloat(min(currentTime - lastTime, 1.0 / 20.0))
+        if lastTime == 0 {
+            lastTime = currentTime
+            return
+        }
+        var dt = CGFloat(currentTime - lastTime)
         lastTime = currentTime
-        realClock += rdt
+        if dt > 0.05 { dt = 0.05 }
+        if dt <= 0 || over { return }
 
-        let targetTs: CGFloat = deadActive ? 0.22 : 1.0
-        ts += (targetTs - ts) * min(1, rdt * 9)
-        self.speed = ts
-        let dt = rdt * ts
-        clock += dt
+        timeLeft -= dt
+        if timeLeft <= 0 {
+            timeLeft = 0
+            updateHUD()
+            endGame()
+            return
+        }
+        timerLabel.text = "\(Int(ceil(timeLeft)))"
 
-        // wind
-        wind = 4.5 * sin(clock * 0.11) + 2.0 * sin(clock * 0.23 + 1.3)
-
-        // clouds
-        for c in clouds {
-            c.position.x += (wind * 2.0 + 4) * dt
-            if c.position.x > W + 140 * u { c.position.x = -140 * u }
-            if c.position.x < -160 * u { c.position.x = W + 130 * u }
+        spawnTimer -= dt
+        if spawnTimer <= 0 {
+            spawnTarget()
+            spawnTimer = CGFloat.random(in: 0.35...0.8)
         }
 
-        // phases
-        switch phase {
-        case .intro:
-            phaseTimer -= rdt
-            if phaseTimer < 0.6 { introNode.alpha = max(0, phaseTimer / 0.6) }
-            if phaseTimer <= 0 {
-                phase = .play
-                introNode.alpha = 0
-            }
-        case .play:
-            timeLeft -= rdt
-            if timeLeft <= 0 {
-                timeLeft = 0
-                endGame()
-            }
-        case .over:
-            break
-        }
-
-        updateTargets(dt)
-        updateMeters(rdt)
-
-        // reload
-        if reloading {
-            reloadTimer -= rdt
-            let prog = 1 - max(0, reloadTimer) / 2.1
-            reloadPose = sin(prog * CGFloat.pi)
-            cylinder.zRotation += 7 * rdt
-            if reloadTimer <= 0 {
-                reloading = false
-                reloadPose = 0
-                ammo = 6
-                updateAmmoHUD()
-                ShSFX.shared.click()
-            }
-        }
-
-        // aim (sway + kick)
-        var targetAmp = 13 * u
-        let holdingNow = holding && breath > 0 && !exhausted && phase == .play
-        if holdingNow { targetAmp *= 0.12 }
-        if exhausted { targetAmp *= 1.7 }
-        if deadActive { targetAmp *= 0.4 }
-        swayAmp += (targetAmp - swayAmp) * min(1, rdt * 5)
-        let sx = swayAmp * (sin(clock * 1.7) + 0.5 * sin(clock * 3.1 + 1.3))
-        let sy = swayAmp * 0.8 * (cos(clock * 1.3) + 0.5 * sin(clock * 2.3 + 2.1))
-        let decay = exp(-5 * dt)
-        kick.x *= decay
-        kick.y *= decay
-        if executing {
-            aimShown = execAim
-        } else {
-            aimShown = CGPoint(x: aimBase.x + sx + kick.x, y: aimBase.y + sy + kick.y)
-        }
-
-        updateBullets(dt)
-        updateParticles(dt)
-
-        // gun
-        recoil *= exp(-9 * dt)
-        shake *= exp(-12 * rdt)
-        root.position = CGPoint(x: CGFloat.random(in: -1...1) * shake, y: CGFloat.random(in: -1...1) * shake)
-        let gx = W / 2 + (aimShown.x - W / 2) * 0.10
-        let gy = -118 * u + recoil * 16 * u - reloadPose * 70 * u
-        gun.position = CGPoint(x: gx, y: gy)
-        let ang = atan2(aimShown.x - gx, max(50, aimShown.y - gy))
-        gun.zRotation = -ang * 0.55 + recoil * 0.05 * recoilDir - reloadPose * 0.5
-        gun.setScale(gunScale * (1 + 0.05 * recoil))
-
-        // crosshair
-        crossNode.position = aimShown
-        updateDistLabel()
-
-        // marks follow targets
-        for t in marks {
-            if let m = t.mark {
-                m.position = project(t.x, t.centerY, t.z)
-            }
-        }
-
-        updateHUD()
-    }
-
-    private func updateMeters(_ rdt: CGFloat) {
-        let wantHold = holding && phase == .play && !exhausted
-        if wantHold && breath > 0 {
-            breath -= rdt * 0.33
-            if breath <= 0 {
-                breath = 0
-                exhausted = true
-            }
-        } else {
-            let regen: CGFloat = exhausted ? 0.15 : 0.25
-            breath = min(1, breath + rdt * regen)
-            if exhausted && breath > 0.35 { exhausted = false }
-        }
-        if deadActive && !executing {
-            deadMeter -= rdt * 0.2
-            if deadMeter <= 0 {
-                deadMeter = 0
-                setDead(false)
-            }
-        }
-    }
-
-    private func updateTargets(_ dt: CGFloat) {
-        guard phase != .over else { return }
-        // respawn static
-        if phase == .play {
-            for i in 0..<respawn.count { respawn[i] -= dt }
-            let ready = respawn.filter { $0 <= 0 }.count
-            respawn.removeAll { $0 <= 0 }
-            for _ in 0..<ready { spawnStatic() }
-            nextClay -= dt
-            if nextClay <= 0 {
-                spawnClay()
-                nextClay = CGFloat.random(in: 4...7)
-            }
-        }
-        // move clay with real gravity
-        for t in targets where t.alive && t.kind == .clay {
-            t.x += t.vx * dt
-            t.y += t.vy * dt
-            t.vy -= grav * dt
-            t.node.position = project(t.x, t.y, t.z)
-            t.node.zRotation += t.spin * dt
-            let half = (W / 2) / f * t.z * 1.25
-            if t.y < 0.05 || abs(t.x) > half {
-                t.alive = false
-                removeTargetNodes(t, delay: 0)
-                marks.removeAll { $0 === t }
-            }
-        }
-        targets.removeAll { !$0.alive }
-    }
-
-    private func updateBullets(_ dt: CGFloat) {
-        var keep: [ShBullet] = []
-        for b in bullets {
-            let zPrev = b.z
-            b.t += dt
-            let zNow = depth(at: b.t)
-            b.z = zNow
-            var finished = false
-
-            if zNow > 2 {
-                let cands = targets.filter { $0.alive && $0.z > zPrev && $0.z <= zNow }.sorted { $0.z < $1.z }
-                for t in cands {
-                    let bp = bulletScreen(t.z, b.aim)
-                    let c = project(t.x, t.centerY, t.z)
-                    let s = f / t.z
-                    let hw = max(t.wM * s * 0.5 * 1.1, 8 * u)
-                    let hh = max(t.hM * s * 0.5 * 1.1, 8 * u)
-                    var ok = abs(bp.x - c.x) <= hw && abs(bp.y - c.y) <= hh
-                    if ok && t.kind == .plate {
-                        let nx = (bp.x - c.x) / hw
-                        let ny = (bp.y - c.y) / hh
-                        ok = nx * nx + ny * ny <= 1
-                    }
-                    if ok {
-                        onHit(t, at: bp)
-                        finished = true
-                        break
-                    }
+        var keep: [GTarget] = []
+        for t in targets {
+            if t.kind == .pigeon {
+                t.node.position = CGPoint(x: t.node.position.x + t.vx * dt, y: t.node.position.y + t.vy * dt)
+                t.vy -= 30 * dt
+                if t.node.position.x < -70 || t.node.position.x > size.width + 70 || t.node.position.y < horizonY {
+                    t.node.removeFromParent()
+                    continue
                 }
-                if !finished {
-                    let bp = bulletScreen(zNow, b.aim)
-                    let gy = groundY(zNow)
-                    if bp.y <= gy {
-                        dust(at: CGPoint(x: bp.x, y: gy), z: zNow, count: 5, color: shc(0.78, 0.6, 0.4))
-                        ShSFX.shared.dirt(Float(max(0.15, 1 - zNow / 60)))
-                        registerMiss()
-                        finished = true
-                    }
-                }
-            }
-            if !finished && zNow > 95 {
-                registerMiss()
-                finished = true
-            }
-            if finished {
-                b.node.removeFromParent()
+                keep.append(t)
                 continue
             }
-
-            // visual tracer: starts at the muzzle, converges on the flight path
-            let bs = bulletScreen(max(zNow, 0.1), b.aim)
-            let w = 2.0 / (zNow + 2.0)
-            let pos = CGPoint(x: bs.x + (b.muzzle.x - bs.x) * w, y: bs.y + (b.muzzle.y - bs.y) * w)
-            let dx = pos.x - b.last.x
-            let dy = pos.y - b.last.y
-            if hypot(dx, dy) > 0.5 {
-                b.node.zRotation = atan2(dy, dx) - CGFloat.pi / 2
+            t.life -= dt
+            if t.life <= 0 {
+                despawn(t)
+                continue
             }
-            b.last = pos
-            b.node.position = pos
-            b.node.setScale(max(0.25, 1 / (1 + zNow / 6)))
-            keep.append(b)
+            keep.append(t)
         }
-        bullets = keep
-    }
-
-    private func updateParticles(_ dt: CGFloat) {
-        for p in particles {
-            p.vy -= p.g * dt
-            p.node.position.x += p.vx * dt
-            p.node.position.y += p.vy * dt
-            p.node.zRotation += p.spin * dt
-            if p.node.position.y < p.floorY && p.vy < 0 {
-                p.node.position.y = p.floorY
-                p.vy = -p.vy * 0.32
-                p.vx *= 0.65
-                p.spin *= 0.5
-                if abs(p.vy) < p.g * 0.06 {
-                    p.vy = 0
-                    p.g = 0
-                    p.vx = 0
-                    p.spin = 0
-                }
-            }
-            p.life -= dt
-            if p.life < 0.6 { p.node.alpha = max(0, p.life / 0.6) }
-        }
-        particles.removeAll { p in
-            if p.life <= 0 {
-                p.node.removeFromParent()
-                return true
-            }
-            return false
-        }
-    }
-
-    // MARK: HUD
-
-    private func updateAmmoHUD() {
-        for (i, a) in ammoIcons.enumerated() {
-            a.alpha = i < ammo ? 1.0 : 0.18
-        }
-    }
-
-    private func updateDistLabel() {
-        var best: ShTarget?
-        var bestD = CGFloat.greatestFiniteMagnitude
-        for t in targets where t.alive {
-            let c = project(t.x, t.centerY, t.z)
-            let d = hypot(c.x - aimShown.x, c.y - aimShown.y)
-            let r = max(45 * u, f * max(t.hM, t.wM) / t.z)
-            if d < r && d < bestD {
-                best = t
-                bestD = d
-            }
-        }
-        if let t = best {
-            setText(distLabel, "\(Int(t.z.rounded())) m")
-        } else {
-            setText(distLabel, "")
-        }
-    }
-
-    private func updateHUD() {
-        setText(scoreLabel, "\(score)")
-        setText(timeLabel, "\(Int(ceil(timeLeft)))")
-        let mult = 1 + 0.25 * CGFloat(min(max(combo - 1, 0), 8))
-        setText(comboLabel, combo >= 2 ? String(format: "COMBO x%.2f", mult) : "")
-        let arrow = wind >= 0 ? "▶" : "◀"
-        setText(windLabel, String(format: "WIND %@ %.1f m/s", arrow, abs(wind)))
-        breathFill.xScale = max(0.001, breath)
-        breathFill.color = exhausted ? shc(1, 0.4, 0.3) : shc(0.35, 0.7, 1)
-        deadFill.xScale = max(0.001, deadMeter)
-        buttons["dead"]?.alpha = deadMeter >= 0.2 || deadActive ? 1.0 : 0.45
-        if ammo == 0 && !reloading {
-            buttons["reload"]?.alpha = 0.6 + 0.4 * sin(realClock * 10)
-        } else {
-            buttons["reload"]?.alpha = 1.0
-        }
+        targets = keep
     }
 }
