@@ -6,46 +6,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: brew install xcodegen
-      - name: Create app
+      - name: Build
         run: |
           mkdir -p App
+          cp App.swift App/App.swift
           cat > project.yml <<'EOF'
           name: LetsGoo
           targets:
             LetsGoo:
               type: application
               platform: iOS
-              deploymentTarget: "14.0"
+              deploymentTarget: "15.0"
               sources: [App]
               settings:
                 GENERATE_INFOPLIST_FILE: YES
                 INFOPLIST_KEY_UILaunchScreen_Generation: YES
+                INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: UIInterfaceOrientationPortrait
+                INFOPLIST_KEY_CFBundleDisplayName: LetsGoo
                 PRODUCT_BUNDLE_IDENTIFIER: com.example.letsgoo
           EOF
-          cat > App/App.swift <<'EOF'
-          import SwiftUI
-          @main
-          struct LetsGooApp: App {
-              var body: some Scene { WindowGroup { ContentView() } }
-          }
-          struct ContentView: View {
-              var body: some View {
-                  ZStack {
-                      Color.black.ignoresSafeArea()
-                      VStack(spacing: 24) {
-                          Text("🖕").font(.system(size: 120))
-                          Text("i built it lets goo fuck you apple")
-                              .font(.title2.bold())
-                              .foregroundColor(.white)
-                              .multilineTextAlignment(.center)
-                              .padding(.horizontal)
-                      }
-                  }
-              }
-          }
-          EOF
-      - name: Build
-        run: |
           xcodegen generate
           xcodebuild -project LetsGoo.xcodeproj -scheme LetsGoo -configuration Release -sdk iphoneos -derivedDataPath build CODE_SIGNING_ALLOWED=NO
           mkdir Payload
