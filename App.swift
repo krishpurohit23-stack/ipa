@@ -1081,6 +1081,7 @@ final class MatchScene: SKScene {
         busy = false
         overShown = false
         fillBoard()
+        seedBombSetup()
         updateHUD()
     }
 
@@ -1261,6 +1262,51 @@ final class MatchScene: SKScene {
             }
         }
         return false
+    }
+
+    // MARK: guaranteed 5-match setup
+
+    func setKind(_ c: Int, _ r: Int, _ k: Int) {
+        guard let t = grid[c][r], t.special == .none else { return }
+        let old = t.node
+        let n = makeTileNode(kind: k, special: .none)
+        n.position = old.position
+        n.zPosition = 1
+        board.addChild(n)
+        old.removeFromParent()
+        t.node = n
+        t.kind = k
+    }
+
+    // puts "X X _ X X" in a row with an X above/below the gap, so one swap makes 5 in a row
+    func seedBombSetup() {
+        for _ in 0..<15 {
+            let r = Int.random(in: 1..<(rows - 1))
+            let c = Int.random(in: 0...(cols - 5))
+            let k = Int.random(in: 0..<6)
+            var m = Int.random(in: 0..<6)
+            while m == k { m = Int.random(in: 0..<6) }
+            let rr = Bool.random() ? r + 1 : r - 1
+            let cells: [Pos] = [
+                Pos(c: c, r: r), Pos(c: c + 1, r: r), Pos(c: c + 2, r: r),
+                Pos(c: c + 3, r: r), Pos(c: c + 4, r: r), Pos(c: c + 2, r: rr)
+            ]
+            var ok = true
+            var saved: [Int] = []
+            for p in cells {
+                if let t = grid[p.c][p.r], t.special == .none {
+                    saved.append(t.kind)
+                } else {
+                    ok = false
+                    break
+                }
+            }
+            if !ok { continue }
+            let newKinds: [Int] = [k, k, m, k, k, k]
+            for (i, p) in cells.enumerated() { setKind(p.c, p.r, newKinds[i]) }
+            if findRuns().isEmpty { return }
+            for (i, p) in cells.enumerated() { setKind(p.c, p.r, saved[i]) }
+        }
     }
 
     // MARK: swapping
@@ -1462,6 +1508,7 @@ final class MatchScene: SKScene {
             fillBoard()
             showToast("No moves left - shuffled!")
         }
+        seedBombSetup()
         busy = false
     }
 
