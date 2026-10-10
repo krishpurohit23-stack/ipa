@@ -1769,7 +1769,9 @@ final class ShSFX {
             let h = n - prev
             prev = n
             let env = Float(exp(-t * 10))
-            let tink = Float(sin(twoPi * (2800 + 900 * sin(t * 60)) * t)) * Float(exp(-t * 24)) * 0.25
+            let fm: Double = 2800 + 900 * sin(t * 60)
+            let tone = Float(sin(twoPi * fm * t))
+            let tink = tone * Float(exp(-t * 24)) * 0.25
             return h * 0.5 * env + tink
         }
 
@@ -1858,15 +1860,15 @@ enum ShArt {
     }
 
     static let soft: SKTexture = {
-        let im = img(CGSize(width: 128, height: 128), scale: 1) { c in
-            rad(c, [shc(1, 1, 1, 1), shc(1, 1, 1, 0.5), shc(1, 1, 1, 0)], [0, 0.4, 1],
+        let im = ShArt.img(CGSize(width: 128, height: 128), scale: 1) { c in
+            ShArt.rad(c, [shc(1, 1, 1, 1), shc(1, 1, 1, 0.5), shc(1, 1, 1, 0)], [0, 0.4, 1],
                 CGPoint(x: 64, y: 64), 0, 64)
         }
         return SKTexture(image: im)
     }()
 
     static let shard: SKTexture = {
-        let im = img(CGSize(width: 16, height: 16), scale: 2) { c in
+        let im = ShArt.img(CGSize(width: 16, height: 16), scale: 2) { c in
             let p = UIBezierPath()
             p.move(to: CGPoint(x: 8, y: 1))
             p.addLine(to: CGPoint(x: 15, y: 14))
@@ -1879,7 +1881,7 @@ enum ShArt {
     }()
 
     static let flash: SKTexture = {
-        let im = img(CGSize(width: 200, height: 200), scale: 2) { c in
+        let im = ShArt.img(CGSize(width: 200, height: 200), scale: 2) { c in
             let ctr = CGPoint(x: 100, y: 100)
             let star = UIBezierPath()
             let n = 12
@@ -1893,14 +1895,14 @@ enum ShArt {
             star.close()
             c.saveGState()
             star.addClip()
-            rad(c, [shc(1, 1, 0.85, 1), shc(1, 0.75, 0.2, 0.95), shc(1, 0.35, 0, 0)], [0, 0.35, 1], ctr, 0, 98)
+            ShArt.rad(c, [shc(1, 1, 0.85, 1), shc(1, 0.75, 0.2, 0.95), shc(1, 0.35, 0, 0)], [0, 0.35, 1], ctr, 0, 98)
             c.restoreGState()
         }
         return SKTexture(image: im)
     }()
 
     static let bottle: SKTexture = {
-        let im = img(CGSize(width: 40, height: 112)) { c in
+        let im = ShArt.img(CGSize(width: 40, height: 112)) { c in
             let p = UIBezierPath()
             p.move(to: CGPoint(x: 15, y: 2))
             p.addLine(to: CGPoint(x: 25, y: 2))
@@ -1919,7 +1921,7 @@ enum ShArt {
             p.close()
             c.saveGState()
             p.addClip()
-            lin(c, [shc(0.04, 0.22, 0.09, 0.95), shc(0.22, 0.62, 0.3, 0.9), shc(0.03, 0.18, 0.08, 0.95)],
+            ShArt.lin(c, [shc(0.04, 0.22, 0.09, 0.95), shc(0.22, 0.62, 0.3, 0.9), shc(0.03, 0.18, 0.08, 0.95)],
                 [0, 0.4, 1], CGPoint(x: 5, y: 0), CGPoint(x: 35, y: 0))
             shc(0.93, 0.86, 0.68).setFill()
             c.fill(CGRect(x: 5, y: 72, width: 30, height: 24))
@@ -1937,26 +1939,26 @@ enum ShArt {
     }()
 
     static let can: SKTexture = {
-        let im = img(CGSize(width: 36, height: 50)) { c in
+        let im = ShArt.img(CGSize(width: 36, height: 50)) { c in
             shc(0.35, 0.36, 0.4).setFill()
             UIBezierPath(ovalIn: CGRect(x: 4, y: 40, width: 28, height: 8)).fill()
             let body = UIBezierPath(rect: CGRect(x: 4, y: 8, width: 28, height: 36))
             c.saveGState()
             body.addClip()
-            lin(c, [shc(0.45, 0.46, 0.5), shc(0.92, 0.93, 0.95), shc(0.4, 0.41, 0.45)],
+            ShArt.lin(c, [shc(0.45, 0.46, 0.5), shc(0.92, 0.93, 0.95), shc(0.4, 0.41, 0.45)],
                 [0, 0.35, 1], CGPoint(x: 4, y: 0), CGPoint(x: 32, y: 0))
-            lin(c, [shc(0.75, 0.2, 0.1, 0.95), shc(0.95, 0.4, 0.2, 0.95), shc(0.6, 0.15, 0.08, 0.95)],
+            ShArt.lin(c, [shc(0.75, 0.2, 0.1, 0.95), shc(0.95, 0.4, 0.2, 0.95), shc(0.6, 0.15, 0.08, 0.95)],
                 [0, 0.4, 1], CGPoint(x: 4, y: 0), CGPoint(x: 32, y: 0))
             c.restoreGState()
             // label stripes (redraw metal band top & bottom over label)
             c.saveGState()
             body.addClip()
-            lin(c, [shc(0.45, 0.46, 0.5), shc(0.92, 0.93, 0.95), shc(0.4, 0.41, 0.45)],
+            ShArt.lin(c, [shc(0.45, 0.46, 0.5), shc(0.92, 0.93, 0.95), shc(0.4, 0.41, 0.45)],
                 [0, 0.35, 1], CGPoint(x: 4, y: 0), CGPoint(x: 32, y: 0))
             c.restoreGState()
             c.saveGState()
             UIBezierPath(rect: CGRect(x: 4, y: 16, width: 28, height: 20)).addClip()
-            lin(c, [shc(0.7, 0.18, 0.1), shc(0.98, 0.45, 0.2), shc(0.55, 0.12, 0.07)],
+            ShArt.lin(c, [shc(0.7, 0.18, 0.1), shc(0.98, 0.45, 0.2), shc(0.55, 0.12, 0.07)],
                 [0, 0.4, 1], CGPoint(x: 4, y: 0), CGPoint(x: 32, y: 0))
             shc(1, 0.9, 0.5).setFill()
             c.fill(CGRect(x: 4, y: 24, width: 28, height: 4))
@@ -1972,7 +1974,7 @@ enum ShArt {
     }()
 
     static let plate: SKTexture = {
-        let im = img(CGSize(width: 64, height: 64)) { c in
+        let im = ShArt.img(CGSize(width: 64, height: 64)) { c in
             let ctr = CGPoint(x: 32, y: 32)
             let rings: [(CGFloat, UIColor)] = [
                 (30, shc(0.55, 0.57, 0.62)),
@@ -1989,17 +1991,17 @@ enum ShArt {
             let o = UIBezierPath(ovalIn: CGRect(x: 2, y: 2, width: 60, height: 60))
             o.lineWidth = 1.2
             o.stroke()
-            rad(c, [shc(1, 1, 1, 0.35), shc(1, 1, 1, 0)], [0, 1], CGPoint(x: 22, y: 20), 0, 26)
+            ShArt.rad(c, [shc(1, 1, 1, 0.35), shc(1, 1, 1, 0)], [0, 1], CGPoint(x: 22, y: 20), 0, 26)
         }
         return SKTexture(image: im)
     }()
 
     static let clay: SKTexture = {
-        let im = img(CGSize(width: 60, height: 26)) { c in
+        let im = ShArt.img(CGSize(width: 60, height: 26)) { c in
             let body = UIBezierPath(ovalIn: CGRect(x: 2, y: 3, width: 56, height: 20))
             c.saveGState()
             body.addClip()
-            lin(c, [shc(1, 0.6, 0.2), shc(0.9, 0.35, 0.08), shc(0.6, 0.2, 0.05)], [0, 0.5, 1],
+            ShArt.lin(c, [shc(1, 0.6, 0.2), shc(0.9, 0.35, 0.08), shc(0.6, 0.2, 0.05)], [0, 0.5, 1],
                 CGPoint(x: 0, y: 3), CGPoint(x: 0, y: 23))
             c.restoreGState()
             shc(1, 0.8, 0.5, 0.8).setFill()
@@ -2012,17 +2014,17 @@ enum ShArt {
     }()
 
     static let cartridge: SKTexture = {
-        let im = img(CGSize(width: 10, height: 30)) { c in
+        let im = ShArt.img(CGSize(width: 10, height: 30)) { c in
             let casing = UIBezierPath(roundedRect: CGRect(x: 1, y: 11, width: 8, height: 18), cornerRadius: 1.5)
             c.saveGState()
             casing.addClip()
-            lin(c, [shc(0.7, 0.5, 0.15), shc(1, 0.88, 0.45), shc(0.6, 0.4, 0.1)], [0, 0.4, 1],
+            ShArt.lin(c, [shc(0.7, 0.5, 0.15), shc(1, 0.88, 0.45), shc(0.6, 0.4, 0.1)], [0, 0.4, 1],
                 CGPoint(x: 1, y: 0), CGPoint(x: 9, y: 0))
             c.restoreGState()
             let tip = UIBezierPath(roundedRect: CGRect(x: 1.5, y: 1, width: 7, height: 13), cornerRadius: 3.5)
             c.saveGState()
             tip.addClip()
-            lin(c, [shc(0.4, 0.38, 0.38), shc(0.75, 0.72, 0.7), shc(0.35, 0.33, 0.33)], [0, 0.4, 1],
+            ShArt.lin(c, [shc(0.4, 0.38, 0.38), shc(0.75, 0.72, 0.7), shc(0.35, 0.33, 0.33)], [0, 0.4, 1],
                 CGPoint(x: 1.5, y: 0), CGPoint(x: 8.5, y: 0))
             c.restoreGState()
         }
@@ -2030,7 +2032,7 @@ enum ShArt {
     }()
 
     static let cactus: SKTexture = {
-        let im = img(CGSize(width: 60, height: 120)) { c in
+        let im = ShArt.img(CGSize(width: 60, height: 120)) { c in
             let green1 = shc(0.14, 0.38, 0.17)
             let green2 = shc(0.3, 0.58, 0.28)
             let parts: [UIBezierPath] = [
@@ -2043,7 +2045,7 @@ enum ShArt {
             for p in parts {
                 c.saveGState()
                 p.addClip()
-                lin(c, [green1, green2, green1], [0, 0.4, 1], CGPoint(x: 0, y: 0), CGPoint(x: 60, y: 0))
+                ShArt.lin(c, [green1, green2, green1], [0, 0.4, 1], CGPoint(x: 0, y: 0), CGPoint(x: 60, y: 0))
                 c.restoreGState()
             }
             shc(0, 0.1, 0, 0.35).setStroke()
@@ -2059,7 +2061,7 @@ enum ShArt {
     }()
 
     static let tuft: SKTexture = {
-        let im = img(CGSize(width: 28, height: 16), scale: 2) { c in
+        let im = ShArt.img(CGSize(width: 28, height: 16), scale: 2) { c in
             shc(0.45, 0.4, 0.2, 0.9).setStroke()
             for i in 0..<9 {
                 let x = 4 + CGFloat(i) * 2.5
@@ -2075,30 +2077,30 @@ enum ShArt {
     }()
 
     static let rock: SKTexture = {
-        let im = img(CGSize(width: 40, height: 22), scale: 2) { c in
+        let im = ShArt.img(CGSize(width: 40, height: 22), scale: 2) { c in
             let p = UIBezierPath(ovalIn: CGRect(x: 1, y: 3, width: 38, height: 18))
             c.saveGState()
             p.addClip()
-            lin(c, [shc(0.7, 0.62, 0.55), shc(0.4, 0.33, 0.28)], [0, 1], CGPoint(x: 0, y: 3), CGPoint(x: 0, y: 21))
+            ShArt.lin(c, [shc(0.7, 0.62, 0.55), shc(0.4, 0.33, 0.28)], [0, 1], CGPoint(x: 0, y: 3), CGPoint(x: 0, y: 21))
             c.restoreGState()
         }
         return SKTexture(image: im)
     }()
 
     static let vignette: SKTexture = {
-        let im = img(CGSize(width: 256, height: 256), scale: 1) { c in
-            rad(c, [shc(0, 0, 0, 0), shc(0, 0, 0, 0), shc(0, 0, 0, 0.62)], [0, 0.5, 1],
+        let im = ShArt.img(CGSize(width: 256, height: 256), scale: 1) { c in
+            ShArt.rad(c, [shc(0, 0, 0, 0), shc(0, 0, 0, 0), shc(0, 0, 0, 0.62)], [0, 0.5, 1],
                 CGPoint(x: 128, y: 128), 0, 182)
         }
         return SKTexture(image: im)
     }()
 
     static let cylinder: SKTexture = {
-        let im = img(CGSize(width: 88, height: 88)) { c in
+        let im = ShArt.img(CGSize(width: 88, height: 88)) { c in
             let ctr = CGPoint(x: 44, y: 44)
             c.saveGState()
             UIBezierPath(ovalIn: CGRect(x: 0, y: 0, width: 88, height: 88)).addClip()
-            rad(c, [shc(0.55, 0.57, 0.62), shc(0.26, 0.27, 0.31), shc(0.07, 0.07, 0.09)], [0, 0.7, 1], ctr, 0, 44)
+            ShArt.rad(c, [shc(0.55, 0.57, 0.62), shc(0.26, 0.27, 0.31), shc(0.07, 0.07, 0.09)], [0, 0.7, 1], ctr, 0, 44)
             c.restoreGState()
             for i in 0..<6 {
                 let a = CGFloat(i) * CGFloat.pi / 3
@@ -2107,7 +2109,7 @@ enum ShArt {
                 UIBezierPath(ovalIn: CGRect(x: p.x - 10, y: p.y - 10, width: 20, height: 20)).fill()
                 c.saveGState()
                 UIBezierPath(ovalIn: CGRect(x: p.x - 8, y: p.y - 8, width: 16, height: 16)).addClip()
-                rad(c, [shc(1, 0.92, 0.55), shc(0.78, 0.52, 0.16), shc(0.5, 0.32, 0.08)], [0, 0.6, 1], p, 0, 8)
+                ShArt.rad(c, [shc(1, 0.92, 0.55), shc(0.78, 0.52, 0.16), shc(0.5, 0.32, 0.08)], [0, 0.6, 1], p, 0, 8)
                 c.restoreGState()
                 shc(0.45, 0.28, 0.07).setFill()
                 UIBezierPath(ovalIn: CGRect(x: p.x - 2.5, y: p.y - 2.5, width: 5, height: 5)).fill()
@@ -2124,7 +2126,7 @@ enum ShArt {
 
     // Revolver seen from behind (first person)
     static let gunBody: SKTexture = {
-        let im = img(CGSize(width: 240, height: 360)) { c in
+        let im = ShArt.img(CGSize(width: 240, height: 360)) { c in
             // barrel
             let barrel = UIBezierPath()
             barrel.move(to: CGPoint(x: 111, y: 14))
@@ -2134,7 +2136,7 @@ enum ShArt {
             barrel.close()
             c.saveGState()
             barrel.addClip()
-            lin(c, [shc(0.05, 0.06, 0.07), shc(0.38, 0.4, 0.45), shc(0.07, 0.08, 0.09)], [0, 0.45, 1],
+            ShArt.lin(c, [shc(0.05, 0.06, 0.07), shc(0.38, 0.4, 0.45), shc(0.07, 0.08, 0.09)], [0, 0.45, 1],
                 CGPoint(x: 94, y: 0), CGPoint(x: 146, y: 0))
             c.restoreGState()
             shc(1, 1, 1, 0.28).setStroke()
@@ -2154,7 +2156,7 @@ enum ShArt {
             let frame = UIBezierPath(roundedRect: CGRect(x: 58, y: 166, width: 124, height: 100), cornerRadius: 20)
             c.saveGState()
             frame.addClip()
-            lin(c, [shc(0.06, 0.07, 0.09), shc(0.32, 0.34, 0.39), shc(0.06, 0.07, 0.09)], [0, 0.5, 1],
+            ShArt.lin(c, [shc(0.06, 0.07, 0.09), shc(0.32, 0.34, 0.39), shc(0.06, 0.07, 0.09)], [0, 0.5, 1],
                 CGPoint(x: 58, y: 0), CGPoint(x: 182, y: 0))
             c.restoreGState()
             shc(1, 1, 1, 0.14).setStroke()
@@ -2165,7 +2167,7 @@ enum ShArt {
             let strap = UIBezierPath(roundedRect: CGRect(x: 92, y: 150, width: 56, height: 24), cornerRadius: 6)
             c.saveGState()
             strap.addClip()
-            lin(c, [shc(0.1, 0.11, 0.13), shc(0.5, 0.52, 0.57), shc(0.1, 0.11, 0.13)], [0, 0.5, 1],
+            ShArt.lin(c, [shc(0.1, 0.11, 0.13), shc(0.5, 0.52, 0.57), shc(0.1, 0.11, 0.13)], [0, 0.5, 1],
                 CGPoint(x: 92, y: 0), CGPoint(x: 148, y: 0))
             c.restoreGState()
 
@@ -2178,7 +2180,7 @@ enum ShArt {
             hammer.close()
             c.saveGState()
             hammer.addClip()
-            lin(c, [shc(0.15, 0.16, 0.19), shc(0.62, 0.64, 0.68), shc(0.15, 0.16, 0.19)], [0, 0.5, 1],
+            ShArt.lin(c, [shc(0.15, 0.16, 0.19), shc(0.62, 0.64, 0.68), shc(0.15, 0.16, 0.19)], [0, 0.5, 1],
                 CGPoint(x: 108, y: 0), CGPoint(x: 132, y: 0))
             shc(0, 0, 0, 0.4).setStroke()
             for i in 0..<5 {
@@ -2209,7 +2211,7 @@ enum ShArt {
             grip.close()
             c.saveGState()
             grip.addClip()
-            lin(c, [shc(0.26, 0.12, 0.05), shc(0.56, 0.32, 0.14), shc(0.22, 0.1, 0.04)], [0, 0.5, 1],
+            ShArt.lin(c, [shc(0.26, 0.12, 0.05), shc(0.56, 0.32, 0.14), shc(0.22, 0.1, 0.04)], [0, 0.5, 1],
                 CGPoint(x: 64, y: 0), CGPoint(x: 172, y: 0))
             shc(0.1, 0.04, 0.01, 0.25).setStroke()
             for i in 0..<10 {
@@ -2228,7 +2230,7 @@ enum ShArt {
             let glove = UIBezierPath(roundedRect: CGRect(x: 54, y: 294, width: 132, height: 80), cornerRadius: 32)
             c.saveGState()
             glove.addClip()
-            lin(c, [shc(0.14, 0.08, 0.05), shc(0.36, 0.22, 0.12), shc(0.12, 0.07, 0.04)], [0, 0.5, 1],
+            ShArt.lin(c, [shc(0.14, 0.08, 0.05), shc(0.36, 0.22, 0.12), shc(0.12, 0.07, 0.04)], [0, 0.5, 1],
                 CGPoint(x: 54, y: 0), CGPoint(x: 186, y: 0))
             shc(0, 0, 0, 0.35).setStroke()
             for i in 1..<4 {
@@ -2247,7 +2249,7 @@ enum ShArt {
             c.rotate(by: 0.28)
             let thumb = UIBezierPath(roundedRect: CGRect(x: -17, y: -36, width: 34, height: 80), cornerRadius: 17)
             thumb.addClip()
-            lin(c, [shc(0.14, 0.08, 0.05), shc(0.4, 0.25, 0.14), shc(0.12, 0.07, 0.04)], [0, 0.5, 1],
+            ShArt.lin(c, [shc(0.14, 0.08, 0.05), shc(0.4, 0.25, 0.14), shc(0.12, 0.07, 0.04)], [0, 0.5, 1],
                 CGPoint(x: -17, y: 0), CGPoint(x: 17, y: 0))
             c.restoreGState()
         }
@@ -2255,17 +2257,17 @@ enum ShArt {
     }()
 
     static func sky(_ size: CGSize, horizonFromBottom: CGFloat) -> SKTexture {
-        let im = img(size, scale: 1) { c in
+        let im = ShArt.img(size, scale: 1) { c in
             let hRow = size.height - horizonFromBottom
-            lin(c, [shc(0.1, 0.18, 0.42), shc(0.45, 0.36, 0.55), shc(0.95, 0.6, 0.4), shc(1.0, 0.86, 0.6)],
+            ShArt.lin(c, [shc(0.1, 0.18, 0.42), shc(0.45, 0.36, 0.55), shc(0.95, 0.6, 0.4), shc(1.0, 0.86, 0.6)],
                 [0, 0.5, 0.82, 1], CGPoint(x: 0, y: 0), CGPoint(x: 0, y: hRow))
         }
         return SKTexture(image: im)
     }
 
     static func ground(_ size: CGSize) -> SKTexture {
-        let im = img(size, scale: 2) { c in
-            lin(c, [shc(0.9, 0.74, 0.52), shc(0.78, 0.6, 0.4), shc(0.5, 0.34, 0.2)], [0, 0.35, 1],
+        let im = ShArt.img(size, scale: 2) { c in
+            ShArt.lin(c, [shc(0.9, 0.74, 0.52), shc(0.78, 0.6, 0.4), shc(0.5, 0.34, 0.2)], [0, 0.35, 1],
                 CGPoint(x: 0, y: 0), CGPoint(x: 0, y: size.height))
             for _ in 0..<900 {
                 let y = CGFloat.random(in: 0...size.height)
