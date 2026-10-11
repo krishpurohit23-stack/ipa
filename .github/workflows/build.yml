@@ -1,5 +1,7 @@
 name: Build IPA
 on: workflow_dispatch
+permissions:
+  contents: write
 jobs:
   build:
     runs-on: macos-latest
@@ -24,13 +26,20 @@ jobs:
                 INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: UIInterfaceOrientationPortrait
                 INFOPLIST_KEY_CFBundleDisplayName: LetsGoo
                 PRODUCT_BUNDLE_IDENTIFIER: com.example.letsgoo
+                SWIFT_VERSION: "5.0"
           EOF
           xcodegen generate
           xcodebuild -project LetsGoo.xcodeproj -scheme LetsGoo -configuration Release -sdk iphoneos -derivedDataPath build CODE_SIGNING_ALLOWED=NO
           mkdir Payload
           cp -r build/Build/Products/Release-iphoneos/LetsGoo.app Payload/
-          zip -r LetsGoo.ipa Payload
+          zip -qry LetsGoo.ipa Payload
+          unzip -t LetsGoo.ipa > /dev/null
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "build-${{ github.run_number }}" LetsGoo.ipa --title "Build ${{ github.run_number }}" --notes "Unsigned IPA"
       - uses: actions/upload-artifact@v4
         with:
           name: LetsGoo-ipa
           path: LetsGoo.ipa
+          compression-level: 0
