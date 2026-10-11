@@ -2,6 +2,8 @@ import SwiftUI
 import SpriteKit
 import UIKit
 import PhotosUI
+import SceneKit
+import AVFoundation
 
 // MARK: - Embedded images (base64)
 
@@ -27,7 +29,7 @@ struct LetsGooApp: App {
     }
 }
 
-enum Screen { case welcome, photoRun, photoMatch, photoShoot, game, match, shoot, crime }
+enum Screen { case welcome, photoRun, photoMatch, photoShoot, game, match, shoot, crime, geass }
 
 struct RootView: View {
     @State private var screen: Screen = .welcome
@@ -35,7 +37,7 @@ struct RootView: View {
     var body: some View {
         ZStack {
             if screen == .welcome {
-                WelcomeView(onGo: { screen = .photoRun }, onCandy: { screen = .photoMatch }, onFinger: { screen = .photoShoot }, onEnter: { screen = .crime })
+                WelcomeView(onGo: { screen = .photoRun }, onCandy: { screen = .photoMatch }, onFinger: { screen = .photoShoot }, onEnter: { screen = .crime }, onGeass: { screen = .geass })
             } else if screen == .photoRun {
                 PhotoView(onUnlock: { screen = .game })
             } else if screen == .photoMatch {
@@ -48,6 +50,8 @@ struct RootView: View {
                 ShootView(onExit: { screen = .welcome })
             } else if screen == .crime {
                 CrimeView(onExit: { screen = .welcome })
+            } else if screen == .geass {
+                GeassGameView(onExit: { screen = .welcome })
             } else {
                 MatchView(onExit: { screen = .welcome })
             }
@@ -60,6 +64,7 @@ struct WelcomeView: View {
     var onCandy: () -> Void
     var onFinger: () -> Void
     var onEnter: () -> Void
+    var onGeass: () -> Void
 
     var body: some View {
         ZStack {
@@ -117,6 +122,17 @@ struct WelcomeView: View {
                     .padding(.leading, 16)
                     .padding(.bottom, 12)
                     Spacer()
+                    Button(action: onGeass) {
+                        Text("geass")
+                            .font(.headline)
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 22)
+                            .padding(.vertical, 10)
+                            .background(Color.purple)
+                            .clipShape(Capsule())
+                    }
+                    .padding(.trailing, 16)
+                    .padding(.bottom, 12)
                 }
             }
         }
@@ -6367,5 +6383,1709 @@ final class CrimeScene: SKScene {
         }
         world.setScale(zoom)
         world.position = CGPoint(x: size.width / 2 - cx * zoom + ox, y: size.height / 2 - cy * zoom + oy)
+    }
+}
+
+// MARK: - Code Geass (story, characters, voice from the hand-off file)
+// =====================================================================================
+// CodeGeassGame.swift   (single-file hand-off)
+// =====================================================================================
+//
+// BRIEF FOR THE NEXT CLAUDE (read this first)
+// -------------------------------------------
+// Goal: an iPhone 3D story game based on Code Geass. Player walks with a JOYSTICK to a
+// glowing marker, a conversation starts (VOICED with AVSpeechSynthesizer, subtitle only),
+// then a FIGHT / key action, then a short cinematic "vision" beat, then the next chapter.
+//
+// Tech: Swift + SwiftUI + SceneKit. No signing: built as an UNSIGNED IPA by a GitHub
+// Actions workflow (YAML at the bottom of this file) and sideloaded (SideStore/LiveContainer).
+//
+// This file contains:
+//   1. GeassStory       : all 27 chapters (background, travel, trigger, dialogue, fight, vision)
+//   2. GeassCharacters  : procedural 3D characters (no model files), 22 characters + weapons + walk
+//   3. GeassVoice       : TTS with a different pitch/rate per speaker
+//   4. GeassGame + views: working skeleton (joystick, markers, dialogue flow, fight button)
+//   5. Build workflow   : YAML in a comment at the bottom
+//
+// What is DONE: story data, character factory, game flow skeleton.
+// What is TODO (suggested order): real combat (light/heavy/dodge) per chapter `fight` text,
+//   per-chapter environments (see `background`), music/SFX, save progress, nicer camera,
+//   limbs animation polish, optional imported .obj/.usdz models (see CHARACTER NOTE).
+//
+// CHARACTER NOTE: the user wants "proper 3D" models. Characters here are stylized, built from
+// SceneKit shapes (toon outline, eyes, hair spikes, capes). Higher quality .obj models can be
+// dropped in later: load with SCNScene(url:) and replace GeassCharacters.make(name). A reference
+// image of Lelouch's emperor outfit was supplied by the user (dark blue coat, gold trim,
+// high collar, red-lined cape, white cravat, black gloves, red Geass eye) and is mirrored in
+// the "LelouchEmperor" spec.
+//
+// To integrate: add this file to the target. Present `GeassGameView()` as your root view.
+// If your project already has an @main App, do not add another one.
+// =====================================================================================
+
+
+// MARK: - 1. STORY ---------------------------------------------------------------------
+
+struct GeassLine { let who: String; let text: String }
+
+struct GeassChapter {
+    let id: Int
+    let season: String
+    let title: String
+    let player: String        // model the player controls
+    let cast: [String]        // NPC models standing at the marker
+    let background: String    // setting + music (build the environment from this)
+    let travel: String        // where the player walks with the joystick
+    let trigger: String       // when the conversation starts
+    let lines: [GeassLine]
+    let fight: String         // combat / key action ("None" = skip)
+    let vision: String        // camera + mood
+}
+
+private func GL(_ who: String, _ text: String) -> GeassLine { GeassLine(who: who, text: text) }
+
+enum GeassStory {
+    static let chapters: [GeassChapter] = [
+        GeassChapter(id: 1, season: "Season 1", title: "Night in Shinjuku", player: "Lelouch", cast: ["C.C.", "Soldier"],
+            background: "Shinjuku ghetto at night: ruined buildings, smoke, gunfire far away. Slow, tense music.",
+            travel: "Walk through the ghetto alleys to a truck (glowing marker), sneaking past 2 Britannian patrol soldiers.",
+            trigger: "Within 3 meters of the truck.",
+            lines: [GL("Lelouch", "What is going on? The soldiers killed everyone!"), GL("Lelouch", "They were alive. There were children."),
+                    GL("C.C.", "You will die here. Or you can listen to me."), GL("Lelouch", "Who are you?"),
+                    GL("C.C.", "Make a contract. I give you power. In return, you fulfill one wish of mine."),
+                    GL("Lelouch", "What kind of power?"), GL("C.C.", "The kind that lets you fight this world."),
+                    GL("Soldier", "Who is there? Hands up!")],
+            fight: "A soldier aims a rifle at Lelouch. Slow motion, a button appears: 'Accept Contract'. Pressing it lights the red Geass in Lelouch's eye. Lelouch: 'Die... for me.' The soldier shoots himself.",
+            vision: "Zoom on Lelouch's eye with the red bird sigil. Screen goes black with sound only, then returns."),
+        GeassChapter(id: 2, season: "Season 1", title: "The End of Clovis", player: "Zero", cast: ["Clovis"],
+            background: "Palace grand hall at night, red carpet, silence. No music, only footsteps.",
+            travel: "Sneak past 3 guards from outside the palace up the stairs to Clovis's room.",
+            trigger: "At the door of the room.",
+            lines: [GL("Clovis", "Who are you? Guards!"), GL("Zero", "Keep quiet, Clovis. I came to collect for the massacre you ordered in Shinjuku."),
+                    GL("Clovis", "They were only Elevens. Their lives had no value!"), GL("Zero", "Value? Now neither does yours.")],
+            fight: "No fight. The player must press 'Fire'. The story waits until it is pressed. Lelouch (quietly): 'I have taken a life for the first time. I can't go back now.'",
+            vision: "Red flash after the shot, then silence. Lelouch's hands tremble."),
+        GeassChapter(id: 3, season: "Season 1", title: "Ashford Academy (Two Faces)", player: "Lelouch", cast: ["Shirley", "Milly", "Nunnally"],
+            background: "Morning sunshine on campus, birdsong. Light, cheerful music, a world away from Shinjuku.",
+            travel: "Free roam. Three markers: classroom (Shirley), garden (Milly), dorm (Nunnally).",
+            trigger: "A short conversation at each marker.",
+            lines: [GL("Shirley", "Lelouch! Where were you last night? You disappeared again!"), GL("Lelouch", "Just out for a walk. Don't worry."),
+                    GL("Milly", "Student council party tonight. Don't be late, Lelouch!"), GL("Nunnally", "Brother, you look tired. Shall I make tea?"),
+                    GL("Lelouch", "No, you rest. Your brother will take care of everything.")],
+            fight: "None.", vision: "Show what Lelouch fights for: a safe world for Nunnally. Warm colors, soft focus."),
+        GeassChapter(id: 4, season: "Season 1", title: "Birth of the Black Knights", player: "Zero", cast: ["Kallen", "Ohgi", "Tamaki", "Tohdoh"],
+            background: "Black warehouse, secret base, red neon. Drums and strings.",
+            travel: "Walk through a tunnel into the big hall where the resistance waits.",
+            trigger: "Center of the hall.",
+            lines: [GL("Zero", "From today we are the Black Knights. We fight for everyone Britannia has crushed."), GL("Kallen", "And if we lose?"),
+                    GL("Zero", "Losing is no longer an option."), GL("Ohgi", "You do give us hope of winning."),
+                    GL("Tamaki", "How can we trust you? You won't even show your face."), GL("Zero", "Trust my work. My work is my identity.")],
+            fight: "First Knightmare battle near Shinjuku. Give orders from Zero's strategy menu (tap to set positions). Use Kallen's Guren to bring down 3 enemy Sutherlands.",
+            vision: "Top-down tactical camera, a spark on every hit, a slash effect when Guren tears an enemy apart."),
+        GeassChapter(id: 5, season: "Season 1", title: "Kallen Learns the Truth", player: "Lelouch", cast: ["Kallen"],
+            background: "Ashford rooftop at dusk, red sun. Soft, mysterious music.",
+            travel: "Walk around school; Kallen asks you up to the roof.", trigger: "On the roof.",
+            lines: [GL("Kallen", "You are Zero, Lelouch. I know."), GL("Lelouch", "What a ridiculous thing to say, Kallen."),
+                    GL("Kallen", "Don't lie. I recognized your voice."), GL("Lelouch", "Fine. Yes, I am Zero. What will you do?"),
+                    GL("Kallen", "I'm with you. But don't lie to me again.")],
+            fight: "None.", vision: "Two faces against one sun, seeing each other truly for the first time."),
+        GeassChapter(id: 6, season: "Season 1", title: "Face to Face with Suzaku", player: "Zero", cast: ["Suzaku"],
+            background: "Port parking lot, morning fog, a ship's horn. Tense violin.",
+            travel: "Hide in a truck and follow the convoy by joystick.", trigger: "The Lancelot blocks the way.",
+            lines: [GL("Suzaku", "Stop! Drop your weapons!"), GL("Zero", "I have no other choice, Suzaku. You stand in my way."),
+                    GL("Suzaku", "How do you know my name?"), GL("Zero", "You don't need to know that.")],
+            fight: "Zero vs Suzaku (Lancelot), 3 phases: dodge by swiping, Slash Harken to stop the Lancelot, then use Geass (button). Fight breaks off when Cornelia's order arrives.",
+            vision: "Fast cuts, clanging steel. Tension on Suzaku's face, quiet pain on Lelouch's."),
+        GeassChapter(id: 7, season: "Season 1", title: "Capture of Cornelia", player: "Zero", cast: ["Cornelia"],
+            background: "Saitama ghetto in daylight, rubble. Heavy war drums.",
+            travel: "Enter a valley and set 3 traps (go to each marker and press the button).", trigger: "At the end of the valley Cornelia arrives.",
+            lines: [GL("Cornelia", "Zero! You will not escape today!"), GL("Zero", "Cornelia, you are an excellent general. But today the victory is mine."),
+                    GL("Cornelia", "Your arrogance will be your downfall."), GL("Zero", "Not arrogance. Strategy.")],
+            fight: "Spring the traps to topple her Knightmare. Last hit: Zero takes a sword, cuts open the cockpit and captures her.",
+            vision: "Slow motion as her Knightmare falls. A storm of dust."),
+        GeassChapter(id: 8, season: "Season 1", title: "The Narita Landslide", player: "Zero", cast: ["Shirley"],
+            background: "Hills of Narita, rain, mud. Heavy, sad music.",
+            travel: "Reach a mountain top and walk above the valley where the Britannian convoy passes.", trigger: "After the landslide.",
+            lines: [GL("Shirley", "Papa is gone. In a landslide."), GL("Lelouch", "...I am so sorry, Shirley.")],
+            fight: "Zero triggers a landslide (press the button). Soldiers and ordinary people are buried together. Shirley's father was among them.",
+            vision: "Lelouch's face, Shirley's tears, Zero's mask lying face down on the table."),
+        GeassChapter(id: 9, season: "Season 1", title: "The Massacre of Euphemia", player: "Lelouch", cast: ["Euphemia"],
+            background: "A huge stadium, 'Special Zone' event, crowds, flags. Music sweet, then frightening.",
+            travel: "Enter the stadium without the Zero mask and walk to Euphemia's stage.", trigger: "In front of the stage.",
+            lines: [GL("Euphemia", "Lelouch? You're here?"), GL("Lelouch", "You are very brave, Euphie. But you don't know what this plan will cause."),
+                    GL("Euphemia", "I only want peace. For everyone."), GL("Lelouch", "That is exactly the mistake."),
+                    GL("Euphemia", "Kill the Japanese. All of them."), GL("Lelouch", "No! Euphie, stop!"), GL("Lelouch", "Forgive me, Euphie.")],
+            fight: "No fight. Accidental Geass: control slips out of Lelouch's hands. Final: the player must press 'Fire' to stop her. Story waits for it.",
+            vision: "Screen slowly turns red. Screams fade out. Lelouch in tears."),
+        GeassChapter(id: 10, season: "Season 1", title: "Kamine Island, Suzaku's Truth", player: "Lelouch", cast: ["Suzaku"],
+            background: "A small island, seashore, darkness. Very quiet music.",
+            travel: "Lelouch and Suzaku walk separate paths to a shrine.", trigger: "Inside the shrine they face each other.",
+            lines: [GL("Suzaku", "It's you, Lelouch. You are Zero."), GL("Lelouch", "Yes. I am Zero."), GL("Suzaku", "You killed Euphemia."),
+                    GL("Lelouch", "She was beyond my control. But yes, it was me."), GL("Suzaku", "I will never forgive you.")],
+            fight: "Suzaku vs Lelouch (sword). Dodge (swipe) and counter. Suzaku wins and takes Lelouch to the Emperor.",
+            vision: "Face to face with lightning between them. A friendship broken, now enemies."),
+        GeassChapter(id: 11, season: "Season 1", title: "Season 1 Finale: Memories Rewritten", player: "Suzaku", cast: ["Lelouch", "Charles"],
+            background: "Great Britannian palace throne room, red curtains, silence. Slow organ.",
+            travel: "Walk a long corridor to the throne room with Lelouch in handcuffs.", trigger: "In front of the throne.",
+            lines: [GL("Suzaku", "This is Zero, Your Majesty. Lelouch vi Britannia."), GL("Charles", "Lelouch. You are alive. And an enemy."),
+                    GL("Lelouch", "Father, why did you abandon Nunnally? Why didn't you save Mother?"),
+                    GL("Charles", "Those questions are no longer yours to ask."), GL("Lelouch", "You let me live in a lie!")],
+            fight: "None. Charles's Geass: red light from his eye, Lelouch's memories are rewritten. The player only watches.",
+            vision: "Screen fades to white, Lelouch's eyes empty. 'To be continued' card."),
+        GeassChapter(id: 12, season: "Season 2", title: "Lelouch's False Memories", player: "Lelouch", cast: ["Rolo", "C.C."],
+            background: "Ashford Academy a year later, quiet afternoon. Soft piano.",
+            travel: "Free roam with Rolo following. Visit the classroom, the garden and Nunnally's empty room.", trigger: "At the door of the empty room.",
+            lines: [GL("Rolo", "Brother, nobody lives there. Why do you always come here?"), GL("Lelouch", "I don't know. As if someone used to live here, but I can't remember."),
+                    GL("Rolo", "Just stay with me. I am your brother."), GL("C.C.", "Lelouch, it is time to wake up.")],
+            fight: "None. C.C. touches him and his memories return in one jolt.",
+            vision: "Flash cuts: Nunnally, Euphemia, Shinjuku. Eyes turn red. Zero is back."),
+        GeassChapter(id: 13, season: "Season 2", title: "Return of Zero", player: "Lelouch", cast: ["Kallen", "Ohgi", "Tohdoh"],
+            background: "Old warehouse at night, rain. Slow, heavy strings.",
+            travel: "Walk through the rain to a hidden base.", trigger: "At the base door.",
+            lines: [GL("Kallen", "Zero? You were gone!"), GL("Zero", "I never left. I only paused."), GL("Ohgi", "We were looking for you. Tohdoh is with us too."),
+                    GL("Zero", "This time we will change not just Japan, but the whole world.")],
+            fight: "Small Knightmare battle: take down 4 enemies to clear the road.", vision: "Raindrops on Knightmare armor. New resolve behind the mask."),
+        GeassChapter(id: 14, season: "Season 2", title: "Nunnally Becomes Viceroy", player: "Zero", cast: ["Nunnally", "Schneizel"],
+            background: "Large garden, morning sun, flowers. Soft, innocent music.",
+            travel: "Walk to the garden of Nunnally's palace.", trigger: "Nunnally in her wheelchair in the middle of the garden.",
+            lines: [GL("Nunnally", "Brother, are you Zero?"), GL("Zero", "Yes, Nunnally."), GL("Nunnally", "I am the Viceroy now. I want to keep everyone together. Please come with me."),
+                    GL("Zero", "I cannot. My world and yours are different."), GL("Nunnally", "Why are you afraid of me?")],
+            fight: "None.", vision: "Garden flowers, Nunnally's innocent smile, Lelouch's heavy eyes."),
+        GeassChapter(id: 15, season: "Season 2", title: "First Meeting with Schneizel", player: "Zero", cast: ["Schneizel"],
+            background: "Quiet hall of white marble, bright light from afar. Cold classical music.",
+            travel: "Climb the stairs as an ambassador; a security check at each step (no hiding).", trigger: "Middle of the hall.",
+            lines: [GL("Schneizel", "Welcome, Zero. You seem a remarkable chess player."), GL("Zero", "And you, a quiet wolf."),
+                    GL("Schneizel", "I only want peace. You know all roads lead to the same place."), GL("Zero", "Yes. But my road will be different from all others.")],
+            fight: "Chess mini-game, win in 3 moves. Win or lose the story continues; winning unlocks a bonus conversation.",
+            vision: "Close-ups of eyes and chess pieces. Cold blue lighting."),
+        GeassChapter(id: 16, season: "Season 2", title: "China, Tianzi and Xingke", player: "Zero", cast: ["Tianzi", "Xingke"],
+            background: "Grand Chinese palace, red and gold, daylight. Flute and drums.",
+            travel: "Step off a small ship and climb the palace stairs.", trigger: "Inside the palace.",
+            lines: [GL("Tianzi", "Zero, we are very happy to meet you."), GL("Xingke", "We want to be free of Britannia, Zero. Can you stand with us?"),
+                    GL("Zero", "I will. But on one condition: you trust me completely."), GL("Xingke", "Trust has to be earned."), GL("Zero", "Then I will earn it.")],
+            fight: "Mini sword fight: Xingke vs Kallen (player). 3 attacks: light, heavy, dodge. Win and Xingke joins you.",
+            vision: "Flashing blades, red curtains, Tianzi's quiet smile."),
+        GeassChapter(id: 17, season: "Season 2", title: "Rolo's Sacrifice", player: "Lelouch", cast: ["Rolo"],
+            background: "Small white room at night, a single lamp. Slow violin.",
+            travel: "The wounded Lelouch walks to Rolo, who lies on the ground.", trigger: "Next to Rolo.",
+            lines: [GL("Rolo", "Brother... I gave my life. For you."), GL("Lelouch", "Rolo, don't talk. I have to save you."),
+                    GL("Rolo", "You were my family, Brother. For the first time I felt someone was mine."), GL("Lelouch", "You will always be my brother.")],
+            fight: "Rolo's last attack: the player acts in his place to protect Lelouch from an enemy Knightmare. Then Rolo dies.",
+            vision: "The lamp slowly goes out. Rolo's eyes close. Camera pulls back."),
+        GeassChapter(id: 18, season: "Season 2", title: "Suzaku, Knight of Zero", player: "Suzaku", cast: ["Schneizel", "Lloyd"],
+            background: "Large training hall in the morning, white walls. Fast drums.",
+            travel: "Enter the hall where Schneizel and Lloyd wait with the new Lancelot.", trigger: "Middle of the hall.",
+            lines: [GL("Schneizel", "Suzaku, you are now the Knight of Zero. You will protect Nunnally."), GL("Suzaku", "I will fulfill this duty completely."),
+                    GL("Lloyd", "The Lancelot Albion is stronger than ever."), GL("Suzaku", "I will stop Lelouch. Whatever it takes.")],
+            fight: "Suzaku vs the Black Knights: take down 4 Knightmares with the Lancelot Albion (light, heavy, dodge). Finish with a slash combo.",
+            vision: "Grim resolve on Suzaku's face. Flash of the sword."),
+        GeassChapter(id: 19, season: "Season 2", title: "The Betrayal", player: "Zero", cast: ["Ohgi", "Kallen", "Tohdoh"],
+            background: "Black Knights' base, darkness, red alarm. Tense music of betrayal.",
+            travel: "Walk into the base. Every room is empty.", trigger: "In the main hall, guns aimed at you.",
+            lines: [GL("Ohgi", "Zero, we found out all your secrets. You betrayed us."), GL("Zero", "I showed you the road to victory."),
+                    GL("Kallen", "You lied, Zero. You used your Geass on us too."), GL("Zero", "..."), GL("Tohdoh", "We will have to find another way.")],
+            fight: "None. Lelouch alone against everyone. Retreat with the joystick and escape the base.",
+            vision: "Wide shot: Lelouch alone in a huge hall, face turned back as he runs."),
+        GeassChapter(id: 20, season: "Season 2", title: "The Death of Shirley", player: "Lelouch", cast: ["Shirley", "Rolo"],
+            background: "Roof of an old building at night, very quiet. Very slow piano.",
+            travel: "Climb to the roof where Shirley stands.", trigger: "At the edge of the roof.",
+            lines: [GL("Shirley", "Lelouch... I remember everything now."), GL("Lelouch", "Shirley, let me explain..."),
+                    GL("Shirley", "You did it to my father... and still I love you."), GL("Lelouch", "Shirley!")],
+            fight: "Rolo fires from behind. No dodge, a scripted moment.", vision: "Slow motion as Shirley falls. Lelouch's scream. Screen turns white."),
+        GeassChapter(id: 21, season: "Season 2", title: "The Truth of Geass", player: "Lelouch", cast: ["C.C."],
+            background: "Small white room at night, smoke. Silence.",
+            travel: "Walk with C.C. into an old building holding the history of Marianne and V.V.", trigger: "Inside, an old painting.",
+            lines: [GL("C.C.", "Lelouch, your mother Marianne was killed. And your father hid it all."), GL("Lelouch", "Why did Father do this?"),
+                    GL("C.C.", "He wants to free the world from lies. He wants to merge everyone's memories into one."), GL("Lelouch", "And Nunnally?"),
+                    GL("C.C.", "She has become a piece in his game.")],
+            fight: "None.", vision: "Old pictures, C.C.'s quiet sadness, Lelouch's dawning realization."),
+        GeassChapter(id: 22, season: "Season 2", title: "The Ragnarok Plan", player: "Lelouch", cast: ["C.C.", "Charles"],
+            background: "Great temple filled with light. Devotional, mystical music.",
+            travel: "Walk into the temple where Emperor Charles stands.", trigger: "Middle of the temple.",
+            lines: [GL("Charles", "You have come, Lelouch. I was waiting for you."), GL("Lelouch", "Father, you want to bind the world with a lie."),
+                    GL("Charles", "I am uniting everyone. No lies, no pain."), GL("Lelouch", "That is the very lie you call truth.")],
+            fight: "Lelouch uses Geass instead of a sword. In 3 phases cancel Charles's Geass (button timing).",
+            vision: "Light and darkness together. The red glow of both Geass."),
+        GeassChapter(id: 23, season: "Season 2", title: "The Sword of Akasha", player: "Lelouch", cast: ["C.C.", "Suzaku", "Charles"],
+            background: "Great temple, golden walls, full of light. Epic choir.",
+            travel: "Walk into the temple with C.C. and Suzaku (now an ally).", trigger: "In the middle, Charles surrounds them.",
+            lines: [GL("Suzaku", "Lelouch, I am with you. But this is the last time."), GL("Lelouch", "Thank you, Suzaku."),
+                    GL("Charles", "You two, against me?"), GL("Lelouch", "Father, this game ends now."),
+                    GL("Lelouch", "Father, you took my mother from me. I will not forgive you.")],
+            fight: "Charles vs Lelouch + Suzaku, 3 phases: Suzaku attacks, Lelouch cancels Charles's light with Geass, Lelouch finishes him with the sword (button).",
+            vision: "A blast of light, Charles falls, Marianne's voice fades out."),
+        GeassChapter(id: 24, season: "Season 2", title: "The Fortress Damocles", player: "LelouchEmperor", cast: ["Schneizel"],
+            background: "Huge flying fortress with clouds below. Heavy, epic music.",
+            travel: "Walk into the fortress, passing many gates.", trigger: "At the control room door.",
+            lines: [GL("Schneizel", "You have taken this fortress, Lelouch."), GL("Lelouch", "Now I will unite the world, Schneizel. In my own way."),
+                    GL("Schneizel", "You are becoming a tyrant."), GL("Lelouch", "That is exactly what I need. An enemy everyone can hate.")],
+            fight: "Fortress battle with the surviving Black Knights: take down 5 Knightmares.", vision: "Battle above the clouds, the city small below."),
+        GeassChapter(id: 25, season: "Season 2", title: "Fleija and Nunnally's Truth", player: "LelouchEmperor", cast: ["Nunnally", "Schneizel"],
+            background: "Inside Damocles, the ground visible below. Heavy, sad music.",
+            travel: "Walk to the control room where Nunnally stands.", trigger: "Middle of the control room.",
+            lines: [GL("Nunnally", "Brother, I stopped the use of Fleija. But you have done terrible things."), GL("Lelouch", "Nunnally, I did all this only for your happiness."),
+                    GL("Nunnally", "My happiness cannot come from other people's pain, Brother."), GL("Lelouch", "You are right.")],
+            fight: "None. Nunnally takes Lelouch's hand and for the first time gets a chance to see him.",
+            vision: "Clouds in the sky, the ground below. For the first time Nunnally truly sees Lelouch."),
+        GeassChapter(id: 26, season: "Finale", title: "Zero Requiem", player: "Zero", cast: ["LelouchEmperor", "Nunnally"],
+            background: "Britannia's great crossroads, parade, a huge float, a roaring crowd. Drums, then slow strings.",
+            travel: "Player is Suzaku dressed as Zero. Walk slowly through the crowd to the float (no running).", trigger: "At the float.",
+            lines: [GL("Nunnally", "Brother! Stop!"), GL("Lelouch", "Come, Zero. This was always going to end at your hand."),
+                    GL("Zero", "Lelouch... forgive me."), GL("Lelouch", "No forgiving. Just do this."),
+                    GL("Lelouch", "This world... will now be free of hatred.")],
+            fight: "One button only: 'Swing the sword'. The story waits for it. The sword goes into Lelouch's chest.",
+            vision: "Camera stays on Lelouch's eyes. The crowd screams, then dances with joy. Nunnally's hand in Lelouch's. Screen goes white. Credits."),
+        GeassChapter(id: 27, season: "Finale", title: "Epilogue", player: "C.C.", cast: [],
+            background: "Empty road in the morning, soft sunlight. Very quiet music.",
+            travel: "Walk an empty road to an old wagon.", trigger: "At the end of the road.",
+            lines: [GL("C.C.", "Lelouch... you kept your promise."), GL("C.C.", "Now I too can live in peace.")],
+            fight: "None.", vision: "Soft light inside the wagon, a true smile on C.C.'s face for the first time. Fade to white. THE END.")
+    ]
+}
+
+// MARK: - 2. CHARACTERS (procedural 3D, no model files) --------------------------------
+
+private func gRGB(_ r: CGFloat, _ g: CGFloat, _ b: CGFloat) -> UIColor {
+    UIColor(red: r / 255, green: g / 255, blue: b / 255, alpha: 1)
+}
+
+enum GeassHair { case short, spiky, long, bald }
+enum GeassAccessory { case none, glasses, crown }
+
+struct GeassSpec {
+    var skin = gRGB(250, 214, 188)
+    var hair: UIColor
+    var top: UIColor
+    var bottom: UIColor
+    var trim: UIColor = gRGB(230, 190, 70)
+    var hairStyle: GeassHair = .short
+    var height: CGFloat = 1.0        // 1.0 adult, 0.75 child
+    var cape: UIColor? = nil
+    var lining: UIColor? = nil       // cape inner colour (emperor outfit: crimson)
+    var glove: UIColor? = nil
+    var highCollar = false
+    var cravat = false
+    var mask = false                 // Zero's helmet
+    var skirt = false
+    var eye: UIColor = .black
+    var geass = false                // glowing red left eye
+    var accessory: GeassAccessory = .none
+}
+
+enum GeassCharacters {
+
+    static let specs: [String: GeassSpec] = [
+        "Lelouch":   GeassSpec(hair: gRGB(30, 26, 44), top: gRGB(45, 40, 95), bottom: gRGB(20, 20, 25), hairStyle: .spiky, eye: gRGB(140, 70, 220), geass: true),
+        // Emperor outfit, mirrors the user's reference photo: blue coat, gold trim, high collar, red-lined cape, white cravat, black gloves
+        "LelouchEmperor": GeassSpec(hair: gRGB(35, 30, 42), top: gRGB(62, 66, 150), bottom: gRGB(52, 56, 135), hairStyle: .spiky,
+                                    cape: gRGB(66, 68, 98), lining: gRGB(135, 25, 55), glove: gRGB(28, 28, 42), highCollar: true, cravat: true,
+                                    eye: gRGB(140, 70, 220), geass: true),
+        "Zero":      GeassSpec(hair: .black, top: gRGB(25, 25, 30), bottom: gRGB(25, 25, 30), trim: gRGB(150, 100, 230), cape: gRGB(80, 35, 120), lining: gRGB(50, 20, 80), highCollar: true, mask: true),
+        "C.C.":      GeassSpec(hair: gRGB(150, 225, 110), top: .white, bottom: gRGB(235, 235, 240), hairStyle: .long, skirt: true, eye: gRGB(235, 170, 40)),
+        "Suzaku":    GeassSpec(hair: gRGB(115, 75, 45), top: gRGB(238, 238, 245), bottom: gRGB(205, 205, 215), hairStyle: .spiky, eye: gRGB(60, 150, 75)),
+        "Kallen":    GeassSpec(hair: gRGB(205, 45, 45), top: gRGB(30, 30, 40), bottom: gRGB(30, 30, 40), trim: gRGB(210, 50, 50), hairStyle: .spiky, eye: gRGB(70, 130, 225)),
+        "Nunnally":  GeassSpec(hair: gRGB(155, 115, 75), top: gRGB(245, 175, 195), bottom: gRGB(245, 175, 195), hairStyle: .long, height: 0.85, skirt: true, eye: gRGB(150, 90, 210)),
+        "Euphemia":  GeassSpec(hair: gRGB(245, 160, 195), top: gRGB(250, 195, 215), bottom: gRGB(250, 195, 215), hairStyle: .long, skirt: true, eye: gRGB(120, 90, 210)),
+        "Cornelia":  GeassSpec(hair: gRGB(135, 65, 155), top: gRGB(115, 45, 135), bottom: gRGB(70, 30, 90), hairStyle: .long, cape: gRGB(90, 30, 110), eye: gRGB(120, 60, 185)),
+        "Schneizel": GeassSpec(hair: gRGB(235, 225, 195), top: gRGB(250, 250, 250), bottom: gRGB(240, 240, 240), cape: gRGB(240, 240, 250), highCollar: true, eye: gRGB(120, 60, 185)),
+        "Charles":   GeassSpec(hair: gRGB(225, 205, 125), top: gRGB(240, 240, 240), bottom: gRGB(185, 35, 45), cape: gRGB(150, 20, 30), accessory: .crown),
+        "Clovis":    GeassSpec(hair: gRGB(235, 215, 120), top: gRGB(235, 225, 245), bottom: gRGB(160, 120, 190), cape: gRGB(160, 100, 190), eye: gRGB(130, 90, 200)),
+        "Rolo":      GeassSpec(hair: gRGB(55, 35, 65), top: gRGB(45, 40, 95), bottom: gRGB(20, 20, 25), height: 0.9, eye: gRGB(150, 60, 205)),
+        "Shirley":   GeassSpec(hair: gRGB(235, 135, 55), top: gRGB(60, 60, 130), bottom: gRGB(50, 50, 100), hairStyle: .long, skirt: true, eye: gRGB(60, 145, 95)),
+        "Milly":     GeassSpec(hair: gRGB(245, 215, 115), top: gRGB(60, 60, 130), bottom: gRGB(50, 50, 100), hairStyle: .long, skirt: true, eye: gRGB(60, 135, 225)),
+        "Ohgi":      GeassSpec(hair: gRGB(95, 65, 45), top: gRGB(70, 105, 70), bottom: gRGB(50, 60, 50)),
+        "Tamaki":    GeassSpec(hair: gRGB(45, 35, 35), top: gRGB(225, 125, 45), bottom: gRGB(60, 50, 50), hairStyle: .spiky),
+        "Tohdoh":    GeassSpec(hair: gRGB(45, 45, 55), top: gRGB(70, 95, 125), bottom: gRGB(50, 60, 80)),
+        "Lloyd":     GeassSpec(hair: gRGB(195, 175, 225), top: .white, bottom: gRGB(205, 205, 215), accessory: .glasses),
+        "Cecile":    GeassSpec(hair: gRGB(155, 105, 195), top: .white, bottom: gRGB(225, 225, 235), hairStyle: .long, skirt: true),
+        "Tianzi":    GeassSpec(hair: gRGB(30, 25, 30), top: gRGB(215, 45, 55), bottom: gRGB(225, 175, 55), hairStyle: .long, height: 0.75, skirt: true, accessory: .crown),
+        "Xingke":    GeassSpec(hair: gRGB(25, 20, 25), top: gRGB(165, 35, 45), bottom: gRGB(30, 30, 40), hairStyle: .long),
+        "Soldier":   GeassSpec(hair: gRGB(60, 50, 40), top: gRGB(140, 40, 40), bottom: gRGB(60, 60, 70), hairStyle: .short)
+    ]
+
+    static func make(_ name: String) -> SCNNode {
+        let s = specs[name] ?? GeassSpec(hair: .brown, top: .gray, bottom: .darkGray)
+        let root = SCNNode()
+        root.name = name
+
+        func material(_ c: UIColor, shiny: Bool = false) -> SCNMaterial {
+            let m = SCNMaterial()
+            m.diffuse.contents = c
+            m.lightingModel = .blinn
+            if shiny { m.specular.contents = UIColor(white: 1, alpha: 0.6); m.shininess = 40 }
+            return m
+        }
+        func outline(_ n: SCNNode, _ g: SCNGeometry) {
+            guard let og = g.copy() as? SCNGeometry else { return }
+            let m = SCNMaterial()
+            m.diffuse.contents = UIColor.black
+            m.lightingModel = .constant
+            m.cullMode = .front
+            og.materials = [m]
+            let o = SCNNode(geometry: og)
+            o.scale = SCNVector3(1.07, 1.07, 1.07)
+            n.addChildNode(o)
+        }
+        @discardableResult
+        func add(_ parent: SCNNode, _ g: SCNGeometry, _ c: UIColor, _ p: SCNVector3,
+                 name: String? = nil, line: Bool = true, shiny: Bool = false) -> SCNNode {
+            g.materials = [material(c, shiny: shiny)]
+            let n = SCNNode(geometry: g)
+            n.position = p
+            n.name = name
+            if line { outline(n, g) }
+            parent.addChildNode(n)
+            return n
+        }
+
+        let skin = s.mask ? UIColor(white: 0.08, alpha: 1) : s.skin
+        let handColor = s.glove ?? skin
+
+        // Legs (joint at hip) + shoes
+        for (nm, x) in [("legL", Float(-0.18)), ("legR", Float(0.18))] {
+            let joint = SCNNode(); joint.name = nm; joint.position = SCNVector3(x, 0.9, 0)
+            add(joint, SCNCapsule(capRadius: 0.15, height: 0.9), s.bottom, SCNVector3(0, -0.45, 0))
+            add(joint, SCNBox(width: 0.3, height: 0.12, length: 0.46, chamferRadius: 0.05),
+                gRGB(30, 25, 30), SCNVector3(0, -0.84, 0.07), shiny: true)
+            root.addChildNode(joint)
+        }
+        if s.skirt {
+            add(root, SCNCone(topRadius: 0.42, bottomRadius: 0.66, height: 0.7), s.bottom, SCNVector3(0, 0.62, 0))
+        }
+        // Torso, belt, collar, buttons
+        let torso = add(root, SCNBox(width: 0.8, height: 1.0, length: 0.42, chamferRadius: 0.12), s.top,
+                        SCNVector3(0, 1.4, 0), name: "torso")
+        add(root, SCNBox(width: 0.84, height: 0.1, length: 0.46, chamferRadius: 0.03), gRGB(35, 30, 30), SCNVector3(0, 0.95, 0))
+        if s.highCollar {
+            add(root, SCNBox(width: 0.62, height: 0.24, length: 0.5, chamferRadius: 0.06), s.top, SCNVector3(0, 1.97, -0.02))
+            add(root, SCNBox(width: 0.64, height: 0.03, length: 0.52, chamferRadius: 0.01), s.trim, SCNVector3(0, 2.09, -0.02), line: false)
+        } else {
+            add(root, SCNBox(width: 0.5, height: 0.1, length: 0.5, chamferRadius: 0.03), s.trim, SCNVector3(0, 1.88, 0))
+        }
+        if s.cravat {
+            add(torso, SCNCone(topRadius: 0.16, bottomRadius: 0.02, height: 0.4), .white, SCNVector3(0, 0.34, 0.22))
+        }
+        for i in 0..<4 {
+            add(torso, SCNSphere(radius: 0.03), s.trim, SCNVector3(0, Float(0.3 - Double(i) * 0.18), 0.215), line: false, shiny: true)
+        }
+        add(root, SCNCylinder(radius: 0.09, height: 0.14), skin, SCNVector3(0, 1.94, 0), line: false)
+
+        // Arms (joint at shoulder) + gloved/skin hands
+        for (nm, x) in [("armL", Float(-0.56)), ("armR", Float(0.56))] {
+            let joint = SCNNode(); joint.name = nm; joint.position = SCNVector3(x, 1.85, 0)
+            add(joint, SCNSphere(radius: 0.15), s.top, SCNVector3(0, 0, 0))
+            add(joint, SCNCapsule(capRadius: 0.1, height: 0.85), s.top, SCNVector3(0, -0.42, 0))
+            add(joint, SCNCylinder(radius: 0.105, height: 0.07), s.trim, SCNVector3(0, -0.76, 0), line: false)
+            add(joint, SCNSphere(radius: 0.1), handColor, SCNVector3(0, -0.9, 0))
+            root.addChildNode(joint)
+        }
+
+        // Head
+        let head = add(root, SCNSphere(radius: 0.33), skin, SCNVector3(0, 2.25, 0), name: "head")
+        head.scale = SCNVector3(1, 1.08, 1)
+
+        if s.mask {
+            add(head, SCNSphere(radius: 0.36), UIColor(white: 0.07, alpha: 1), SCNVector3(0, 0.02, -0.01), shiny: true)
+            let visor = add(head, SCNBox(width: 0.56, height: 0.14, length: 0.08, chamferRadius: 0.03),
+                            s.trim, SCNVector3(0, -0.02, 0.32), line: false)
+            visor.geometry?.firstMaterial?.emission.contents = s.trim
+            for x in [Float(-0.4), Float(0.4)] {
+                let fin = add(head, SCNBox(width: 0.05, height: 0.5, length: 0.2, chamferRadius: 0.01),
+                              UIColor(white: 0.07, alpha: 1), SCNVector3(x, 0.12, -0.02))
+                fin.eulerAngles = SCNVector3(0, 0, x < 0 ? 0.5 : -0.5)
+            }
+        } else {
+            for x in [Float(-0.33), Float(0.33)] {
+                let ear = add(head, SCNSphere(radius: 0.06), skin, SCNVector3(x, -0.03, 0), line: false)
+                ear.scale = SCNVector3(0.5, 1, 1)
+            }
+            for x in [Float(-0.12), Float(0.12)] {
+                let white = add(head, SCNSphere(radius: 0.075), .white, SCNVector3(x, -0.04, 0.29), line: false)
+                white.scale = SCNVector3(1, 1.2, 0.5)
+                let isGeass = s.geass && x < 0
+                let irisColor = isGeass ? gRGB(235, 30, 40) : s.eye
+                let iris = add(head, SCNSphere(radius: 0.05), irisColor, SCNVector3(x, -0.04, 0.315), line: false)
+                iris.scale = SCNVector3(1, 1.25, 0.5)
+                if isGeass { iris.geometry?.firstMaterial?.emission.contents = gRGB(255, 40, 50) }
+                let pupil = add(head, SCNSphere(radius: 0.022), .black, SCNVector3(x, -0.04, 0.327), line: false)
+                pupil.scale = SCNVector3(1, 1.3, 0.5)
+            }
+            add(head, SCNBox(width: 0.1, height: 0.016, length: 0.02, chamferRadius: 0.005),
+                gRGB(150, 70, 70), SCNVector3(0, -0.17, 0.285), line: false)
+
+            if s.hairStyle != .bald {
+                add(head, SCNSphere(radius: 0.355), s.hair, SCNVector3(0, 0.05, -0.03), shiny: true)
+                let big: CGFloat = s.hairStyle == .spiky ? 1.0 : 0.7
+                let rings: [(Double, Int, Double, Double)] = [
+                    (0.0, 1, 0.0, 0.0),
+                    (0.65, 8, 0.0, 6.2832),
+                    (1.0, 5, 0.0, 1.6),
+                    (1.05, 5, 3.1416, 2.0)
+                ]
+                for (pitch, count, center, span) in rings {
+                    for i in 0..<count {
+                        let isFull: Bool = span >= 6.28
+                        var t: Double = 0
+                        if count > 1 {
+                            if isFull { t = Double(i) / Double(count) } else { t = Double(i) / Double(count - 1) - 0.5 }
+                        }
+                        let yaw: Double = center + t * span
+                        let yawHolder = SCNNode(); yawHolder.eulerAngles = SCNVector3(0, Float(yaw), 0)
+                        let pitchHolder = SCNNode(); pitchHolder.eulerAngles = SCNVector3(Float(pitch), 0, 0)
+                        let h: CGFloat = 0.3 * big
+                        add(pitchHolder, SCNCone(topRadius: 0, bottomRadius: 0.1, height: h), s.hair,
+                            SCNVector3(0, Float(0.35 + h / 2 - 0.05), 0), line: true, shiny: true)
+                        yawHolder.addChildNode(pitchHolder)
+                        head.addChildNode(yawHolder)
+                    }
+                }
+                if s.hairStyle == .long {
+                    add(head, SCNBox(width: 0.7, height: 1.0, length: 0.14, chamferRadius: 0.05), s.hair, SCNVector3(0, -0.4, -0.27), shiny: true)
+                    for x in [Float(-0.36), Float(0.36)] {
+                        add(head, SCNBox(width: 0.1, height: 0.75, length: 0.22, chamferRadius: 0.04), s.hair, SCNVector3(x, -0.3, 0.0), shiny: true)
+                    }
+                }
+            }
+            if s.accessory == .glasses {
+                add(head, SCNBox(width: 0.54, height: 0.07, length: 0.03, chamferRadius: 0), .darkGray, SCNVector3(0, -0.04, 0.335), line: false)
+            }
+        }
+        if s.accessory == .crown {
+            add(head, SCNCylinder(radius: 0.23, height: 0.15), gRGB(240, 200, 60), SCNVector3(0, 0.38, 0), shiny: true)
+        }
+
+        // Cape (+ coloured lining facing the body)
+        if let c = s.cape {
+            if let lin = s.lining {
+                add(root, SCNBox(width: 0.9, height: 1.42, length: 0.04, chamferRadius: 0.02), lin, SCNVector3(0, 1.25, -0.27), line: false)
+            }
+            add(root, SCNBox(width: 0.96, height: 1.5, length: 0.05, chamferRadius: 0.02), c, SCNVector3(0, 1.25, -0.31), name: "cape")
+            add(root, SCNBox(width: 0.98, height: 0.04, length: 0.07, chamferRadius: 0.01), s.trim, SCNVector3(0, 2.0, -0.31), line: false)
+        }
+
+        root.scale = SCNVector3(Float(s.height), Float(s.height), Float(s.height))
+        return root
+    }
+
+    // MARK: animation + weapons
+
+    static func startWalking(_ node: SCNNode) {
+        func swing(_ n: SCNNode?, _ a: CGFloat) {
+            guard let n = n, n.action(forKey: "walk") == nil else { return }
+            n.runAction(.repeatForever(.sequence([
+                .rotateTo(x: a, y: 0, z: 0, duration: 0.3),
+                .rotateTo(x: -a, y: 0, z: 0, duration: 0.3)
+            ])), forKey: "walk")
+        }
+        swing(node.childNode(withName: "legL", recursively: false), 0.6)
+        swing(node.childNode(withName: "legR", recursively: false), -0.6)
+        swing(node.childNode(withName: "armL", recursively: false), -0.5)
+        swing(node.childNode(withName: "armR", recursively: false), 0.5)
+    }
+
+    static func stopWalking(_ node: SCNNode) {
+        for n in ["legL", "legR", "armL", "armR"] {
+            if let p = node.childNode(withName: n, recursively: false) {
+                p.removeAction(forKey: "walk")
+                p.runAction(.rotateTo(x: 0, y: 0, z: 0, duration: 0.15))
+            }
+        }
+    }
+
+    static func startIdle(_ node: SCNNode) {
+        guard let t = node.childNode(withName: "torso", recursively: false) else { return }
+        t.runAction(.repeatForever(.sequence([.scale(to: 1.02, duration: 1.2), .scale(to: 1.0, duration: 1.2)])), forKey: "idle")
+    }
+
+    static func attachSword(_ node: SCNNode) {
+        guard let arm = node.childNode(withName: "armR", recursively: false) else { return }
+        arm.childNode(withName: "weapon", recursively: false)?.removeFromParentNode()
+        let w = SCNNode(); w.name = "weapon"; w.position = SCNVector3(0, -0.9, 0)
+        func box(_ x: CGFloat, _ y: CGFloat, _ z: CGFloat, _ c: UIColor, _ p: SCNVector3) {
+            let g = SCNBox(width: x, height: y, length: z, chamferRadius: 0.005)
+            let m = SCNMaterial(); m.diffuse.contents = c; m.specular.contents = UIColor.white; m.shininess = 80
+            g.materials = [m]
+            let n = SCNNode(geometry: g); n.position = p; w.addChildNode(n)
+        }
+        box(0.05, 0.05, 0.28, gRGB(60, 40, 30), SCNVector3(0, 0, 0.05))
+        box(0.28, 0.05, 0.05, gRGB(230, 190, 70), SCNVector3(0, 0, 0.2))
+        box(0.05, 0.08, 1.0, gRGB(215, 220, 230), SCNVector3(0, 0, 0.72))
+        arm.addChildNode(w)
+    }
+
+    static func attachGun(_ node: SCNNode) {
+        guard let arm = node.childNode(withName: "armR", recursively: false) else { return }
+        arm.childNode(withName: "weapon", recursively: false)?.removeFromParentNode()
+        let w = SCNNode(); w.name = "weapon"; w.position = SCNVector3(0, -0.9, 0)
+        func box(_ x: CGFloat, _ y: CGFloat, _ z: CGFloat, _ p: SCNVector3) {
+            let g = SCNBox(width: x, height: y, length: z, chamferRadius: 0.01)
+            let m = SCNMaterial(); m.diffuse.contents = UIColor(white: 0.1, alpha: 1); m.specular.contents = UIColor.white
+            g.materials = [m]
+            let n = SCNNode(geometry: g); n.position = p; w.addChildNode(n)
+        }
+        box(0.07, 0.12, 0.3, SCNVector3(0, 0.02, 0.12))
+        box(0.06, 0.2, 0.08, SCNVector3(0, -0.1, 0.02))
+        arm.addChildNode(w)
+    }
+
+    static func slash(_ node: SCNNode) {
+        guard let arm = node.childNode(withName: "armR", recursively: false) else { return }
+        arm.runAction(.sequence([.rotateTo(x: -2.4, y: 0, z: 0, duration: 0.18),
+                                 .rotateTo(x: -0.4, y: 0, z: 0, duration: 0.12),
+                                 .rotateTo(x: 0, y: 0, z: 0, duration: 0.2)]), forKey: "attack")
+    }
+
+    static func aim(_ node: SCNNode, hold: Bool = true) {
+        guard let arm = node.childNode(withName: "armR", recursively: false) else { return }
+        arm.runAction(.rotateTo(x: hold ? -1.5 : 0, y: 0, z: 0, duration: 0.2), forKey: "attack")
+    }
+
+    static func fall(_ node: SCNNode) {
+        node.runAction(.group([.rotateBy(x: -1.57, y: 0, z: 0, duration: 0.6), .moveBy(x: 0, y: -0.5, z: 0, duration: 0.6)]))
+    }
+}
+
+// MARK: - 3. VOICE ----------------------------------------------------------------------
+
+enum GeassVoice {
+    private static let synth = AVSpeechSynthesizer()
+    // (pitch 0.5...2.0, rate 0...1) per speaker, so every character sounds a bit different
+    private static let styles: [String: (Float, Float)] = [
+        "Lelouch": (0.9, 0.48), "Zero": (0.7, 0.45), "C.C.": (1.15, 0.45), "Suzaku": (0.95, 0.5),
+        "Kallen": (1.2, 0.52), "Nunnally": (1.5, 0.45), "Euphemia": (1.4, 0.47), "Cornelia": (0.8, 0.5),
+        "Schneizel": (0.85, 0.44), "Charles": (0.55, 0.4), "Clovis": (1.0, 0.5), "Rolo": (1.25, 0.48),
+        "Shirley": (1.35, 0.5), "Milly": (1.3, 0.52), "Ohgi": (0.9, 0.5), "Tamaki": (0.8, 0.55),
+        "Tohdoh": (0.6, 0.45), "Lloyd": (1.1, 0.55), "Cecile": (1.25, 0.5), "Tianzi": (1.6, 0.47),
+        "Xingke": (0.85, 0.5), "Soldier": (0.7, 0.5)
+    ]
+    static func say(_ text: String, as who: String, language: String = "en-US") {
+        synth.stopSpeaking(at: .immediate)
+        let u = AVSpeechUtterance(string: text)
+        u.voice = AVSpeechSynthesisVoice(language: language)
+        let st = styles[who] ?? (1.0, 0.5)
+        u.pitchMultiplier = st.0
+        u.rate = st.1
+        synth.speak(u)
+    }
+    static func stop() { synth.stopSpeaking(at: .immediate) }
+}
+
+
+// MARK: - 4. ENVIRONMENTS (procedural, one look per chapter) -----------------------------
+
+struct GeassMood {
+    let bg: UIColor
+    let ground: UIColor
+    let fog: UIColor
+    let fogEnd: CGFloat
+    let sun: CGFloat
+    let amb: CGFloat
+    let sunColor: UIColor
+    let ambColor: UIColor
+}
+
+enum GeassWorld {
+    static func mood(_ id: Int) -> GeassMood {
+        func m(_ bg: UIColor, _ ground: UIColor, _ fogEnd: CGFloat, _ sun: CGFloat, _ amb: CGFloat, _ sunColor: UIColor = UIColor.white, _ ambColor: UIColor = UIColor.white) -> GeassMood {
+            return GeassMood(bg: bg, ground: ground, fog: bg, fogEnd: fogEnd, sun: sun, amb: amb, sunColor: sunColor, ambColor: ambColor)
+        }
+        let nightBlue = gRGB(120, 125, 210)
+        switch id {
+        case 1: return m(gRGB(8, 8, 20), gRGB(34, 32, 34), 90, 350, 300, gRGB(160, 170, 255), nightBlue)
+        case 2: return m(gRGB(6, 4, 8), gRGB(40, 30, 36), 80, 450, 260, gRGB(255, 200, 190), gRGB(150, 110, 120))
+        case 3, 12: return m(gRGB(140, 195, 240), gRGB(80, 140, 80), 200, 1100, 600, gRGB(255, 245, 220), UIColor.white)
+        case 4: return m(gRGB(12, 4, 6), gRGB(28, 24, 26), 80, 300, 280, gRGB(255, 90, 90), gRGB(160, 80, 80))
+        case 5: return m(gRGB(240, 140, 90), gRGB(95, 90, 100), 160, 900, 420, gRGB(255, 170, 110), gRGB(255, 190, 160))
+        case 6: return m(gRGB(150, 160, 170), gRGB(85, 88, 95), 55, 600, 650, UIColor.white, gRGB(200, 205, 215))
+        case 7: return m(gRGB(220, 190, 150), gRGB(150, 120, 85), 160, 1000, 550, gRGB(255, 235, 200), UIColor.white)
+        case 8: return m(gRGB(70, 80, 78), gRGB(60, 52, 40), 70, 380, 450, gRGB(180, 190, 190), gRGB(130, 140, 140))
+        case 9: return m(gRGB(150, 200, 245), gRGB(215, 205, 190), 220, 1100, 600, UIColor.white, UIColor.white)
+        case 10: return m(gRGB(6, 10, 26), gRGB(30, 36, 50), 85, 320, 280, gRGB(150, 170, 255), nightBlue)
+        case 11: return m(gRGB(14, 4, 6), gRGB(70, 20, 28), 90, 600, 300, gRGB(255, 190, 150), gRGB(180, 100, 100))
+        case 13: return m(gRGB(10, 12, 18), gRGB(30, 32, 36), 70, 330, 300, gRGB(150, 165, 220), nightBlue)
+        case 14: return m(gRGB(170, 215, 245), gRGB(95, 165, 90), 220, 1100, 650, gRGB(255, 250, 225), UIColor.white)
+        case 15: return m(gRGB(205, 215, 235), gRGB(235, 238, 245), 160, 900, 800, gRGB(210, 225, 255), UIColor.white)
+        case 16: return m(gRGB(240, 205, 150), gRGB(150, 40, 40), 200, 1000, 600, gRGB(255, 235, 190), UIColor.white)
+        case 17, 21: return m(gRGB(4, 4, 8), gRGB(190, 190, 195), 40, 180, 220, gRGB(255, 240, 210), gRGB(110, 110, 130))
+        case 18: return m(gRGB(225, 230, 240), gRGB(220, 222, 230), 90, 900, 800, UIColor.white, UIColor.white)
+        case 19: return m(gRGB(14, 2, 4), gRGB(26, 20, 22), 60, 260, 240, gRGB(255, 60, 60), gRGB(150, 50, 50))
+        case 20: return m(gRGB(8, 10, 26), gRGB(48, 48, 56), 120, 380, 300, gRGB(150, 170, 255), nightBlue)
+        case 22, 23: return m(gRGB(235, 205, 130), gRGB(215, 175, 85), 140, 1100, 700, gRGB(255, 240, 190), gRGB(255, 235, 190))
+        case 24, 25: return m(gRGB(130, 175, 235), gRGB(110, 115, 130), 240, 1000, 600, UIColor.white, gRGB(210, 225, 255))
+        case 26: return m(gRGB(160, 205, 245), gRGB(170, 170, 175), 240, 1100, 650, UIColor.white, UIColor.white)
+        default: return m(gRGB(250, 200, 140), gRGB(120, 105, 90), 220, 950, 520, gRGB(255, 225, 180), gRGB(255, 220, 190))
+        }
+    }
+
+    @discardableResult
+    static func box(_ p: SCNNode, _ w: CGFloat, _ h: CGFloat, _ l: CGFloat, _ c: UIColor, _ x: Float, _ y: Float, _ z: Float, glow: Bool = false) -> SCNNode {
+        let g = SCNBox(width: w, height: h, length: l, chamferRadius: 0)
+        let m = SCNMaterial()
+        m.diffuse.contents = c
+        if glow { m.emission.contents = c }
+        g.materials = [m]
+        let n = SCNNode(geometry: g)
+        n.position = SCNVector3(x, y, z)
+        p.addChildNode(n)
+        return n
+    }
+
+    static func scatter(_ s: SCNNode, _ n: Int, _ cols: [UIColor], wMax: CGFloat, hMin: CGFloat, hMax: CGFloat) {
+        for _ in 0..<n {
+            let side: Float = Bool.random() ? 1 : -1
+            let x = side * Float.random(in: 11...34)
+            let z = Float.random(in: -36...14)
+            let h = CGFloat.random(in: hMin...hMax)
+            box(s, CGFloat.random(in: 3...wMax), h, CGFloat.random(in: 3...wMax), cols.randomElement()!, x, Float(h / 2), z)
+        }
+    }
+
+    static func columns(_ s: SCNNode, _ n: Int, _ c: UIColor, x: Float, z0: Float, dz: Float, h: CGFloat) {
+        for i in 0..<n {
+            for sx in [-x, x] {
+                let g = SCNCylinder(radius: 0.5, height: h)
+                let m = SCNMaterial()
+                m.diffuse.contents = c
+                g.materials = [m]
+                let node = SCNNode(geometry: g)
+                node.position = SCNVector3(sx, Float(h / 2), z0 + Float(i) * dz)
+                s.addChildNode(node)
+            }
+        }
+    }
+
+    static func trees(_ s: SCNNode, _ n: Int, _ crown: UIColor) {
+        for _ in 0..<n {
+            let side: Float = Bool.random() ? 1 : -1
+            let x = side * Float.random(in: 10...32)
+            let z = Float.random(in: -32...14)
+            box(s, 0.6, 3, 0.6, gRGB(90, 60, 35), x, 1.5, z)
+            let g = SCNSphere(radius: 2)
+            let m = SCNMaterial()
+            m.diffuse.contents = crown
+            g.materials = [m]
+            let c = SCNNode(geometry: g)
+            c.position = SCNVector3(x, 4.2, z)
+            s.addChildNode(c)
+        }
+    }
+
+    static func lamp(_ s: SCNNode, _ c: UIColor, _ x: Float, _ y: Float, _ z: Float, _ intensity: CGFloat) {
+        let n = SCNNode()
+        n.light = SCNLight()
+        n.light?.type = .omni
+        n.light?.color = c
+        n.light?.intensity = intensity
+        n.light?.attenuationEndDistance = 22
+        n.position = SCNVector3(x, y, z)
+        s.addChildNode(n)
+    }
+
+    static func rain(_ s: SCNNode) {
+        let ps = SCNParticleSystem()
+        ps.birthRate = 1500
+        ps.particleLifeSpan = 1.1
+        ps.particleVelocity = 28
+        ps.emittingDirection = SCNVector3(0, -1, 0)
+        ps.spreadingAngle = 3
+        ps.particleSize = 0.04
+        ps.particleColor = UIColor(white: 0.8, alpha: 0.7)
+        ps.emitterShape = SCNBox(width: 50, height: 0.1, length: 50, chamferRadius: 0)
+        ps.isAffectedByGravity = false
+        ps.loops = true
+        let n = SCNNode()
+        n.position = SCNVector3(0, 24, -5)
+        n.addParticleSystem(ps)
+        s.addChildNode(n)
+    }
+
+    static func knightmare(_ color: UIColor) -> SCNNode {
+        let root = SCNNode()
+        root.name = "Knightmare"
+        let dark = gRGB(55, 58, 68)
+        let gold = gRGB(230, 190, 70)
+        box(root, 1.6, 1.8, 1.1, color, 0, 2.3, 0)
+        box(root, 0.9, 0.7, 0.8, dark, 0, 3.5, 0.05)
+        box(root, 0.55, 0.12, 0.05, gRGB(255, 60, 60), 0, 3.5, 0.46, glow: true)
+        box(root, 0.6, 1.9, 0.7, dark, -0.5, 0.95, 0)
+        box(root, 0.6, 1.9, 0.7, dark, 0.5, 0.95, 0)
+        box(root, 0.45, 1.5, 0.5, color, -1.15, 2.3, 0.1)
+        box(root, 0.45, 1.5, 0.5, color, 1.15, 2.3, 0.1)
+        box(root, 0.7, 0.3, 0.8, gold, -1.15, 3.1, 0.1)
+        box(root, 0.7, 0.3, 0.8, gold, 1.15, 3.1, 0.1)
+        return root
+    }
+
+    // builds the scenery for a chapter into `s`
+    static func build(_ id: Int, _ s: SCNNode) {
+        let grey: [UIColor] = [gRGB(60, 58, 62), gRGB(75, 70, 72), gRGB(50, 52, 58)]
+        switch id {
+        case 1:
+            scatter(s, 26, grey, wMax: 9, hMin: 5, hMax: 16)
+            for _ in 0..<6 {
+                lamp(s, gRGB(255, 130, 40), Float.random(in: -12...12), 2, Float.random(in: -12...8), 500)
+            }
+            box(s, 3, 0.4, 6, gRGB(70, 90, 70), -6, 0.2, 2)
+        case 2, 11:
+            box(s, 6, 0.05, 60, id == 2 ? gRGB(130, 20, 30) : gRGB(150, 25, 35), 0, 0.03, -6)
+            columns(s, 7, gRGB(190, 180, 170), x: 9, z0: 10, dz: -6, h: 10)
+            box(s, 60, 14, 1, gRGB(50, 30, 35), 0, 7, -22)
+            for i in 0..<4 { box(s, 2, 12, 0.3, gRGB(150, 20, 35), Float(i - 2) * 8 + 4, 6, -21) }
+            lamp(s, gRGB(255, 190, 130), 0, 8, -8, 700)
+        case 3, 12:
+            scatter(s, 10, [gRGB(235, 235, 240), gRGB(220, 200, 190)], wMax: 12, hMin: 8, hMax: 14)
+            trees(s, 16, gRGB(60, 130, 60))
+        case 4, 13, 19:
+            let neon = id == 19 ? gRGB(255, 40, 40) : (id == 4 ? gRGB(255, 50, 80) : gRGB(80, 160, 255))
+            scatter(s, 14, [gRGB(30, 30, 36), gRGB(40, 38, 44)], wMax: 8, hMin: 3, hMax: 9)
+            box(s, 60, 14, 1, gRGB(20, 20, 26), 0, 7, -22)
+            for i in 0..<6 { box(s, 0.2, 5, 0.2, neon, Float(i - 3) * 6, 3, -20, glow: true) }
+            lamp(s, neon, 0, 6, -6, 600)
+            if id == 13 { rain(s) }
+        case 5, 20:
+            for i in -10...10 { box(s, 0.15, 1.2, 0.15, gRGB(60, 60, 70), Float(i) * 1.5, 0.6, -14) }
+            box(s, 32, 0.2, 0.2, gRGB(60, 60, 70), 0, 1.2, -14)
+            scatter(s, 22, id == 5 ? [gRGB(120, 90, 100), gRGB(100, 80, 95)] : [gRGB(30, 34, 52), gRGB(40, 44, 66)], wMax: 9, hMin: 4, hMax: 22)
+        case 6:
+            let cols: [UIColor] = [gRGB(190, 60, 50), gRGB(60, 100, 170), gRGB(200, 170, 60), gRGB(70, 130, 90)]
+            scatter(s, 18, cols, wMax: 7, hMin: 4, hMax: 6)
+        case 7:
+            scatter(s, 22, [gRGB(140, 110, 80), gRGB(120, 95, 70), gRGB(160, 130, 95)], wMax: 10, hMin: 4, hMax: 18)
+        case 8:
+            scatter(s, 14, [gRGB(80, 74, 60), gRGB(66, 62, 52)], wMax: 9, hMin: 3, hMax: 10)
+            trees(s, 10, gRGB(40, 70, 45))
+            rain(s)
+        case 9:
+            for i in 0..<14 {
+                let a = Float(i) / 14 * 2 * Float.pi
+                box(s, 9, 8, 3, gRGB(190, 190, 200), cos(a) * 32, 4, -6 + sin(a) * 22)
+            }
+            for i in 0..<8 { box(s, 0.15, 9, 0.15, gRGB(220, 220, 225), Float(i - 4) * 5, 4.5, -18) ; box(s, 2.6, 1.6, 0.05, gRGB(200, 40, 50), Float(i - 4) * 5 + 1.3, 8.2, -18) }
+        case 10:
+            box(s, 400, 0.02, 400, gRGB(10, 30, 70), 0, -0.05, 0)
+            for x in [Float(-2), Float(2)] { box(s, 0.5, 6, 0.5, gRGB(170, 40, 40), x, 3, -14) }
+            box(s, 6, 0.6, 0.6, gRGB(170, 40, 40), 0, 6, -14)
+            box(s, 10, 4, 6, gRGB(70, 55, 45), 0, 2, -20)
+            trees(s, 10, gRGB(25, 55, 40))
+        case 14:
+            trees(s, 14, gRGB(70, 150, 70))
+            for _ in 0..<80 {
+                let g = SCNSphere(radius: 0.18)
+                let m = SCNMaterial()
+                m.diffuse.contents = [gRGB(240, 100, 140), gRGB(250, 220, 90), gRGB(255, 255, 255), gRGB(180, 120, 230)].randomElement()!
+                g.materials = [m]
+                let n = SCNNode(geometry: g)
+                n.position = SCNVector3(Float.random(in: -14...14), 0.2, Float.random(in: -16...10))
+                s.addChildNode(n)
+            }
+        case 15, 18:
+            columns(s, 6, gRGB(245, 245, 250), x: 9, z0: 10, dz: -6, h: 10)
+            box(s, 60, 14, 1, gRGB(225, 228, 238), 0, 7, -22)
+        case 16:
+            columns(s, 6, gRGB(190, 35, 40), x: 9, z0: 10, dz: -6, h: 10)
+            box(s, 60, 14, 1, gRGB(200, 60, 50), 0, 7, -22)
+            box(s, 6, 0.05, 60, gRGB(230, 190, 70), 0, 0.03, -6)
+            lamp(s, gRGB(255, 220, 150), 0, 8, -10, 500)
+        case 17, 21:
+            box(s, 16, 8, 0.5, gRGB(210, 210, 215), 0, 4, -16)
+            box(s, 0.5, 8, 30, gRGB(205, 205, 210), -8, 4, 0)
+            box(s, 0.5, 8, 30, gRGB(205, 205, 210), 8, 4, 0)
+            lamp(s, gRGB(255, 235, 200), 0, 5, -4, 900)
+        case 22, 23:
+            columns(s, 6, gRGB(235, 200, 110), x: 9, z0: 10, dz: -6, h: 12)
+            box(s, 60, 16, 1, gRGB(215, 175, 80), 0, 8, -22)
+            box(s, 8, 0.08, 60, gRGB(255, 240, 180), 0, 0.04, -6, glow: true)
+            lamp(s, gRGB(255, 235, 170), 0, 9, -8, 800)
+        case 24, 25:
+            box(s, 60, 0.6, 60, gRGB(100, 106, 125), 0, -0.3, -10)
+            scatter(s, 8, [gRGB(90, 96, 115), gRGB(120, 126, 145)], wMax: 6, hMin: 6, hMax: 14)
+            for _ in 0..<16 {
+                let g = SCNSphere(radius: CGFloat.random(in: 3...6))
+                let m = SCNMaterial()
+                m.diffuse.contents = UIColor(white: 1, alpha: 0.9)
+                g.materials = [m]
+                let n = SCNNode(geometry: g)
+                n.position = SCNVector3(Float.random(in: -60...60), -8, Float.random(in: -60...20))
+                s.addChildNode(n)
+            }
+        case 26:
+            for _ in 0..<70 {
+                let g = SCNCapsule(capRadius: 0.3, height: 1.7)
+                let m = SCNMaterial()
+                m.diffuse.contents = UIColor(hue: CGFloat.random(in: 0...1), saturation: 0.6, brightness: 0.85, alpha: 1)
+                g.materials = [m]
+                let n = SCNNode(geometry: g)
+                let side: Float = Bool.random() ? 1 : -1
+                n.position = SCNVector3(side * Float.random(in: 6...14), 0.85, Float.random(in: -20...10))
+                s.addChildNode(n)
+            }
+            box(s, 6, 3, 8, gRGB(200, 170, 70), 0, 1.5, -14)
+        default:
+            box(s, 6, 0.05, 60, gRGB(90, 85, 80), 0, 0.03, -6)
+            trees(s, 16, gRGB(80, 140, 70))
+            box(s, 3, 2, 5, gRGB(140, 100, 60), 0, 1, -15)
+        }
+    }
+}
+
+// MARK: - 5. FIGHT PLANS (one per chapter) ---------------------------------------------
+
+enum GeassFightKind {
+    case none
+    case keys([String])
+    case battle(String, Int, CGFloat)                 // enemy model, count, hp each
+    case boss(String, Int, CGFloat, String)           // name, phases, story takes over at this hp fraction (0 = fight to the end), text then
+}
+
+enum GeassFightPlan {
+    static func plan(for id: Int) -> GeassFightKind {
+        switch id {
+        case 1: return .keys(["Accept Contract"])
+        case 2: return .keys(["Fire"])
+        case 4: return .battle("Knightmare", 3, 60)
+        case 6: return .boss("Suzaku", 3, 0.3, "A message from Cornelia arrives. Suzaku hesitates and the fight breaks off.")
+        case 7: return .boss("Cornelia", 3, 0, "")
+        case 8: return .keys(["Trigger the Landslide"])
+        case 9: return .keys(["Use Geass", "Fire"])
+        case 10: return .boss("Suzaku", 3, 0.35, "Suzaku overpowers you and takes you to the Emperor.")
+        case 13: return .battle("Knightmare", 4, 60)
+        case 15: return .keys(["Move 1", "Move 2", "Move 3 - Checkmate"])
+        case 16: return .boss("Xingke", 3, 0, "")
+        case 17: return .keys(["Protect Lelouch"])
+        case 18: return .battle("Knightmare", 4, 70)
+        case 22: return .boss("Charles", 3, 0, "")
+        case 23: return .boss("Charles", 3, 0, "")
+        case 24: return .battle("Knightmare", 5, 60)
+        case 26: return .keys(["Swing the sword"])
+        default: return .none
+        }
+    }
+}
+
+final class GeassEnemy {
+    let node: SCNNode
+    var hp: CGFloat
+    let maxHp: CGFloat
+    var cd: Float = Float.random(in: 0.6...1.6)
+    var windup: Float = 0
+    var stun: Float = 0
+    var dead = false
+    let boss: Bool
+    var speed: Float
+
+    init(node: SCNNode, hp: CGFloat, boss: Bool, speed: Float) {
+        self.node = node
+        self.hp = hp
+        self.maxHp = hp
+        self.boss = boss
+        self.speed = speed
+    }
+}
+
+struct GeassPatrol {
+    let node: SCNNode
+    var dir: Float
+    let speed: Float
+}
+
+// MARK: - 6. GAME ------------------------------------------------------------------------
+
+final class GeassGame: ObservableObject {
+    enum Phase { case travel, dialogue, fight, vision, finished }
+
+    @Published var index = 0
+    @Published var phase: Phase = .travel
+    @Published var speaker = ""
+    @Published var caption = ""
+    @Published var hp: Double = 100
+    @Published var bossFrac: Double = 1
+    @Published var enemiesLeft = 0
+    @Published var phaseText = ""
+    @Published var keyLabel = ""
+    @Published var combatMode = false
+    @Published var geassReady = true
+    @Published var flashColor: Color? = nil
+
+    let scene = SCNScene()
+    let cameraNode = SCNNode()
+    var joy = CGVector.zero
+
+    private let stage = SCNNode()
+    private let floorNode = SCNNode()
+    private let sunNode = SCNNode()
+    private let ambNode = SCNNode()
+    private var player = SCNNode()
+    private var markerPos = SCNVector3(0, 0, -9)
+    private var lineIndex = 0
+    private var walking = false
+    private var timer: Timer?
+
+    private var patrols: [GeassPatrol] = []
+    private var plan: GeassFightKind = .none
+    private var keyIndex = 0
+    private var enemies: [GeassEnemy] = []
+    private var atkCD: Float = 0
+    private var dodgeCD: Float = 0
+    private var dodgeT: Float = 0
+    private var dodgeDX: Float = 0
+    private var dodgeDZ: Float = 0
+    private var invuln: Float = 0
+    private var combatEnded = false
+    private var shakeT: Float = 0
+
+    var chapter: GeassChapter { GeassStory.chapters[index] }
+    var chapterCount: Int { GeassStory.chapters.count }
+
+    init() {
+        let saved = UserDefaults.standard.integer(forKey: "geassChapter")
+        index = max(0, min(saved, GeassStory.chapters.count - 1))
+        setupWorld()
+        loadChapter()
+        timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in self?.tick() }
+    }
+
+    deinit { timer?.invalidate() }
+
+    // World -----------------------------------------------------------------------------
+    private func setupWorld() {
+        let floor = SCNFloor()
+        floor.reflectivity = 0.05
+        floor.firstMaterial?.diffuse.contents = UIColor(white: 0.18, alpha: 1)
+        floorNode.geometry = floor
+        scene.rootNode.addChildNode(floorNode)
+
+        sunNode.light = SCNLight()
+        sunNode.light?.type = .directional
+        sunNode.light?.intensity = 900
+        sunNode.eulerAngles = SCNVector3(-0.9, 0.5, 0)
+        scene.rootNode.addChildNode(sunNode)
+
+        ambNode.light = SCNLight()
+        ambNode.light?.type = .ambient
+        ambNode.light?.intensity = 450
+        scene.rootNode.addChildNode(ambNode)
+
+        cameraNode.camera = SCNCamera()
+        cameraNode.camera?.zFar = 300
+        cameraNode.camera?.fieldOfView = 60
+        cameraNode.position = SCNVector3(0, 6, 18)
+        scene.rootNode.addChildNode(cameraNode)
+        scene.rootNode.addChildNode(stage)
+    }
+
+    func loadChapter() {
+        stage.childNodes.forEach { $0.removeFromParentNode() }
+        enemies = []
+        patrols = []
+        combatEnded = false
+        combatMode = false
+        keyLabel = ""
+        let c = chapter
+
+        let mood = GeassWorld.mood(c.id)
+        scene.background.contents = mood.bg
+        scene.fogColor = mood.fog
+        scene.fogStartDistance = 18
+        scene.fogEndDistance = mood.fogEnd
+        floorNode.geometry?.firstMaterial?.diffuse.contents = mood.ground
+        sunNode.light?.intensity = mood.sun
+        sunNode.light?.color = mood.sunColor
+        ambNode.light?.intensity = mood.amb
+        ambNode.light?.color = mood.ambColor
+        GeassWorld.build(c.id, stage)
+
+        let mx = Float((c.id % 3) - 1) * 6
+        markerPos = SCNVector3(mx, 0, -9)
+
+        let ring = SCNNode(geometry: SCNTorus(ringRadius: 1.2, pipeRadius: 0.08))
+        ring.geometry?.firstMaterial?.diffuse.contents = UIColor.yellow
+        ring.geometry?.firstMaterial?.emission.contents = UIColor.yellow
+        ring.position = SCNVector3(mx, 0.1, -9)
+        ring.runAction(.repeatForever(.sequence([.scale(to: 1.3, duration: 0.6), .scale(to: 1.0, duration: 0.6)])))
+        stage.addChildNode(ring)
+
+        let beam = SCNNode(geometry: SCNCylinder(radius: 0.15, height: 8))
+        beam.geometry?.firstMaterial?.diffuse.contents = UIColor.yellow.withAlphaComponent(0.25)
+        beam.geometry?.firstMaterial?.emission.contents = UIColor.yellow.withAlphaComponent(0.4)
+        beam.position = SCNVector3(mx, 4, -9)
+        stage.addChildNode(beam)
+
+        player = GeassCharacters.make(c.player)
+        player.position = SCNVector3(0, 0, 8)
+        player.eulerAngles.y = .pi
+        GeassCharacters.startIdle(player)
+        stage.addChildNode(player)
+        walking = false
+
+        let n = c.cast.count
+        for (i, name) in c.cast.enumerated() {
+            let npc = GeassCharacters.make(name)
+            let x = mx + (Float(i) - Float(n - 1) / 2) * 2.2
+            npc.position = SCNVector3(x, 0, -12)
+            GeassCharacters.startIdle(npc)
+            stage.addChildNode(npc)
+        }
+
+        // stealth chapters: patrolling guards
+        if c.id == 1 || c.id == 2 {
+            let count = c.id == 1 ? 2 : 3
+            let zs: [Float] = [3, -2, -6]
+            for i in 0..<count {
+                let g = GeassCharacters.make("Soldier")
+                g.position = SCNVector3(i % 2 == 0 ? -8 : 8, 0, zs[i])
+                GeassCharacters.startWalking(g)
+                stage.addChildNode(g)
+                patrols.append(GeassPatrol(node: g, dir: i % 2 == 0 ? 1 : -1, speed: 0.035 + Float(i) * 0.01))
+            }
+        }
+
+        cameraNode.position = SCNVector3(0, 6, 18)
+        phase = .travel
+        speaker = ""
+        caption = c.travel + (patrols.isEmpty ? "" : "  (Don't get close to the guards!)")
+        GeassCharacters.stopWalking(player)
+    }
+
+    // Loop ------------------------------------------------------------------------------
+    private var isCombat: Bool {
+        switch plan {
+        case .battle, .boss: return true
+        default: return false
+        }
+    }
+
+    private func tick() {
+        let dt: Float = 1.0 / 60.0
+        updateCamera()
+        switch phase {
+        case .travel: updateTravel()
+        case .fight: updateFight(dt)
+        default: break
+        }
+    }
+
+    private func updateCamera() {
+        var target = SCNVector3(player.position.x, player.position.y + 6, player.position.z + 10)
+        var look = SCNVector3(player.position.x, 1.5, player.position.z)
+        if phase == .dialogue {
+            target = SCNVector3(markerPos.x + 4.5, 2.6, markerPos.z + 3)
+            look = SCNVector3(markerPos.x - 0.5, 1.7, markerPos.z - 1.5)
+        } else if phase == .fight && isCombat {
+            target = SCNVector3(player.position.x, 7.5, player.position.z + 11)
+        }
+        let cp = cameraNode.position
+        var nx = cp.x + (target.x - cp.x) * 0.07
+        var ny = cp.y + (target.y - cp.y) * 0.07
+        let nz = cp.z + (target.z - cp.z) * 0.07
+        if shakeT > 0 {
+            shakeT -= 1.0 / 60.0
+            nx += Float.random(in: -0.25...0.25)
+            ny += Float.random(in: -0.25...0.25)
+        }
+        cameraNode.position = SCNVector3(nx, ny, nz)
+        cameraNode.look(at: look)
+    }
+
+    private func moveFromJoystick(_ speed: Float) {
+        let mag = hypot(joy.dx, joy.dy)
+        if mag > 0.08 {
+            let dx = Float(joy.dx) * speed
+            let dz = Float(joy.dy) * speed
+            player.position.x = max(-14, min(14, player.position.x + dx))
+            player.position.z = max(-16, min(14, player.position.z + dz))
+            player.eulerAngles.y = atan2(dx, dz)
+            if !walking {
+                GeassCharacters.startWalking(player)
+                walking = true
+            }
+        } else if walking {
+            GeassCharacters.stopWalking(player)
+            walking = false
+        }
+    }
+
+    private func updateTravel() {
+        moveFromJoystick(0.12)
+        for i in 0..<patrols.count {
+            var p = patrols[i]
+            p.node.position.x += p.dir * p.speed
+            if p.node.position.x > 9 { p.dir = -1 }
+            if p.node.position.x < -9 { p.dir = 1 }
+            p.node.eulerAngles.y = p.dir > 0 ? Float.pi / 2 : -Float.pi / 2
+            patrols[i] = p
+            let dx = player.position.x - p.node.position.x
+            let dz = player.position.z - p.node.position.z
+            if hypot(dx, dz) < 3.0 {
+                caught()
+                return
+            }
+        }
+        let ex = player.position.x - markerPos.x
+        let ez = player.position.z - markerPos.z
+        if hypot(ex, ez) < 1.6 { startDialogue() }
+    }
+
+    private func caught() {
+        player.position = SCNVector3(0, 0, 8)
+        caption = "Spotted! Back to the start..."
+        flash(.red)
+        shakeT = 0.4
+    }
+
+    func flash(_ c: Color) {
+        flashColor = c
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { [weak self] in self?.flashColor = nil }
+    }
+
+    // Story flow ------------------------------------------------------------------------
+    private func startDialogue() {
+        GeassCharacters.stopWalking(player)
+        walking = false
+        joy = .zero
+        phase = .dialogue
+        lineIndex = 0
+        showLine()
+    }
+
+    private func showLine() {
+        let l = chapter.lines[lineIndex]
+        speaker = l.who
+        caption = l.text
+        GeassVoice.say(l.text, as: l.who)
+    }
+
+    func next() {
+        guard phase == .dialogue else { return }
+        lineIndex += 1
+        if lineIndex < chapter.lines.count {
+            showLine()
+            return
+        }
+        GeassVoice.stop()
+        speaker = ""
+        startFight()
+    }
+
+    private func prepWeapon() {
+        let f = chapter.fight.lowercased()
+        if f.contains("fire") && !f.contains("sword") {
+            GeassCharacters.attachGun(player)
+        } else {
+            GeassCharacters.attachSword(player)
+        }
+    }
+
+    private func startFight() {
+        plan = GeassFightPlan.plan(for: chapter.id)
+        hp = 100
+        bossFrac = 1
+        geassReady = true
+        combatEnded = false
+        switch plan {
+        case .none:
+            startVision()
+        case .keys(let labels):
+            phase = .fight
+            keyIndex = 0
+            keyLabel = labels[0]
+            combatMode = false
+            caption = chapter.fight
+            let f = chapter.fight.lowercased()
+            if f.contains("sword") { GeassCharacters.attachSword(player) } else if f.contains("fire") { GeassCharacters.attachGun(player) }
+        case .battle, .boss:
+            phase = .fight
+            combatMode = true
+            keyLabel = ""
+            prepWeapon()
+            player.position = SCNVector3(markerPos.x, 0, markerPos.z + 4)
+            spawnForPlan()
+        }
+    }
+
+    // Key actions -----------------------------------------------------------------------
+    func pressKey() {
+        guard phase == .fight, case .keys(let labels) = plan, keyIndex < labels.count else { return }
+        let label = labels[keyIndex]
+        keyEffect(label)
+        keyIndex += 1
+        if keyIndex < labels.count {
+            keyLabel = labels[keyIndex]
+            return
+        }
+        keyLabel = ""
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.1) { [weak self] in self?.startVision() }
+    }
+
+    private func keyEffect(_ label: String) {
+        let l = label.lowercased()
+        if l.contains("contract") {
+            flash(.red)
+            caption = "Lelouch: Die... for me."
+            GeassVoice.say("Die... for me.", as: "Lelouch")
+        } else if l.contains("fire") {
+            GeassCharacters.attachGun(player)
+            GeassCharacters.aim(player)
+            flash(.white)
+            shakeT = 0.3
+        } else if l.contains("sword") {
+            GeassCharacters.attachSword(player)
+            GeassCharacters.slash(player)
+            flash(.white)
+            shakeT = 0.4
+        } else if l.contains("landslide") {
+            flash(.brown)
+            shakeT = 1.2
+        } else if l.contains("geass") {
+            flash(.red)
+        } else {
+            flash(.white)
+        }
+    }
+
+    // Combat ----------------------------------------------------------------------------
+    private func spawnForPlan() {
+        enemies.forEach { $0.node.removeFromParentNode() }
+        enemies = []
+        switch plan {
+        case .battle(let kind, let count, let each):
+            for i in 0..<count {
+                let node: SCNNode
+                if kind == "Knightmare" {
+                    node = GeassWorld.knightmare([gRGB(120, 40, 45), gRGB(110, 110, 125), gRGB(60, 80, 120)][i % 3])
+                } else {
+                    node = GeassCharacters.make(kind)
+                }
+                let a = Float(i) / Float(max(1, count)) * Float.pi + Float.pi * 0.1
+                node.position = SCNVector3(max(-13, min(13, player.position.x + cos(a) * 9)), 0, player.position.z - 7 - sin(a) * 3)
+                stage.addChildNode(node)
+                enemies.append(GeassEnemy(node: node, hp: each, boss: false, speed: 0.045))
+            }
+            enemiesLeft = count
+            phaseText = "Enemies: \(count)"
+            bossFrac = 1
+        case .boss(let name, let phases, _, _):
+            let node = GeassCharacters.make(name)
+            node.scale = SCNVector3(node.scale.x * 1.25, node.scale.y * 1.25, node.scale.z * 1.25)
+            GeassCharacters.attachSword(node)
+            node.position = SCNVector3(player.position.x, 0, player.position.z - 9)
+            stage.addChildNode(node)
+            enemies.append(GeassEnemy(node: node, hp: CGFloat(90 * phases), boss: true, speed: 0.05))
+            enemiesLeft = 1
+            phaseText = "Phase 1/\(phases)"
+            bossFrac = 1
+        default:
+            break
+        }
+    }
+
+    private func hurtPlayer(_ d: Double) {
+        if invuln > 0 || combatEnded { return }
+        hp -= d
+        invuln = 0.55
+        flash(.red)
+        shakeT = 0.2
+    }
+
+    private func updateFight(_ dt: Float) {
+        guard isCombat, !combatEnded else { return }
+        atkCD = max(0, atkCD - dt)
+        dodgeCD = max(0, dodgeCD - dt)
+        invuln = max(0, invuln - dt)
+        if dodgeT > 0 {
+            dodgeT -= dt
+            player.position.x = max(-14, min(14, player.position.x + dodgeDX))
+            player.position.z = max(-16, min(14, player.position.z + dodgeDZ))
+        } else {
+            moveFromJoystick(0.11)
+        }
+
+        var phases = 1
+        if case .boss(_, let ph, _, _) = plan { phases = ph }
+
+        for e in enemies where !e.dead {
+            let dx = player.position.x - e.node.position.x
+            let dz = player.position.z - e.node.position.z
+            let d = max(0.01, hypot(dx, dz))
+            e.node.eulerAngles.y = atan2(dx, dz)
+            if e.stun > 0 {
+                e.stun -= dt
+                continue
+            }
+            if e.windup > 0 {
+                e.windup -= dt
+                if e.windup <= 0 {
+                    if d < (e.boss ? 3.5 : 3.0) { hurtPlayer(e.boss ? 14 : 8) }
+                    e.cd = e.boss ? 1.1 : 1.6
+                    GeassCharacters.slash(e.node)
+                }
+                continue
+            }
+            if d > (e.boss ? 2.6 : 2.0) {
+                e.node.position.x += dx / d * e.speed
+                e.node.position.z += dz / d * e.speed
+            }
+            e.cd -= dt
+            if d < (e.boss ? 3.2 : 2.5) && e.cd <= 0 {
+                e.windup = e.boss ? 0.45 : 0.6
+                e.node.runAction(.sequence([.scale(by: 1.12, duration: 0.2), .scale(by: 1 / 1.12, duration: 0.2)]))
+            }
+        }
+
+        // boss phases and story takeover
+        if case .boss(_, _, let endAt, let endText) = plan, let b = enemies.first {
+            let frac = Double(max(0, b.hp) / b.maxHp)
+            bossFrac = frac
+            let p = min(phases, Int((1 - frac) * Double(phases)) + 1)
+            phaseText = "Phase \(p)/\(phases)"
+            b.speed = 0.05 * (1 + 0.25 * Float(p - 1))
+            if endAt > 0 && frac <= Double(endAt) {
+                endCombat(text: endText)
+                return
+            }
+        }
+        if enemies.allSatisfy({ $0.dead }) {
+            endCombat(text: "Victory!")
+            return
+        }
+        if hp <= 0 {
+            var takeover: String? = nil
+            if case .boss(_, _, let endAt, let endText) = plan, endAt > 0 { takeover = endText }
+            if let t = takeover {
+                endCombat(text: t)
+            } else {
+                combatEnded = true
+                caption = "Defeated... try again."
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) { [weak self] in self?.restartFight() }
+            }
+        }
+    }
+
+    private func endCombat(text: String) {
+        combatEnded = true
+        combatMode = false
+        caption = text
+        for e in enemies where !e.dead { e.stun = 99 }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) { [weak self] in self?.startVision() }
+    }
+
+    private func restartFight() {
+        hp = 100
+        combatEnded = false
+        geassReady = true
+        player.position = SCNVector3(markerPos.x, 0, markerPos.z + 4)
+        caption = chapter.fight
+        spawnForPlan()
+    }
+
+    private func spark(_ p: SCNVector3) {
+        let g = SCNSphere(radius: 0.18)
+        g.firstMaterial?.emission.contents = UIColor.yellow
+        g.firstMaterial?.diffuse.contents = UIColor.orange
+        let s = SCNNode(geometry: g)
+        s.position = SCNVector3(p.x, 1.6, p.z)
+        stage.addChildNode(s)
+        s.runAction(.sequence([.group([.scale(to: 2.4, duration: 0.2), .fadeOut(duration: 0.2)]), .removeFromParentNode()]))
+    }
+
+    private func damage(_ e: GeassEnemy, _ amount: CGFloat, heavy: Bool) {
+        e.hp -= amount
+        spark(e.node.position)
+        let dx = e.node.position.x - player.position.x
+        let dz = e.node.position.z - player.position.z
+        let d = max(0.01, hypot(dx, dz))
+        e.node.position.x += dx / d * (heavy ? 0.8 : 0.4)
+        e.node.position.z += dz / d * (heavy ? 0.8 : 0.4)
+        if heavy || !e.boss { e.windup = 0 }
+        if e.hp <= 0 {
+            e.dead = true
+            GeassCharacters.fall(e.node)
+            e.node.runAction(.sequence([.wait(duration: 1.0), .fadeOut(duration: 0.4), .removeFromParentNode()]))
+            let left = enemies.filter { !$0.dead }.count
+            enemiesLeft = left
+            if !e.boss { phaseText = "Enemies: \(left)" }
+        }
+    }
+
+    func attack(heavy: Bool) {
+        guard phase == .fight, isCombat, !combatEnded, atkCD <= 0 else { return }
+        atkCD = heavy ? 0.85 : 0.32
+        // auto-face the nearest enemy
+        var nearest: GeassEnemy? = nil
+        var best: Float = 5.5
+        for e in enemies where !e.dead {
+            let d = hypot(e.node.position.x - player.position.x, e.node.position.z - player.position.z)
+            if d < best {
+                best = d
+                nearest = e
+            }
+        }
+        if let n = nearest {
+            player.eulerAngles.y = atan2(n.node.position.x - player.position.x, n.node.position.z - player.position.z)
+        }
+        GeassCharacters.slash(player)
+        let range: Float = heavy ? 3.8 : 3.2
+        let dmg: CGFloat = heavy ? 44 : 18
+        let fx = sin(player.eulerAngles.y)
+        let fz = cos(player.eulerAngles.y)
+        for e in enemies where !e.dead {
+            let dx = e.node.position.x - player.position.x
+            let dz = e.node.position.z - player.position.z
+            let d = hypot(dx, dz)
+            if d < range + (e.boss ? 0.8 : 0) {
+                let dot = (dx * fx + dz * fz) / max(d, 0.01)
+                if dot > (heavy ? -0.2 : 0.3) { damage(e, dmg, heavy: heavy) }
+            }
+        }
+    }
+
+    func dodge() {
+        guard phase == .fight, isCombat, !combatEnded, dodgeCD <= 0 else { return }
+        dodgeCD = 0.6
+        dodgeT = 0.22
+        invuln = 0.5
+        var dx = Float(joy.dx)
+        var dz = Float(joy.dy)
+        if hypot(dx, dz) < 0.1 {
+            dx = -sin(player.eulerAngles.y)
+            dz = -cos(player.eulerAngles.y)
+        }
+        let l = max(0.01, hypot(dx, dz))
+        dodgeDX = dx / l * 0.28
+        dodgeDZ = dz / l * 0.28
+    }
+
+    func useGeass() {
+        guard phase == .fight, isCombat, !combatEnded, geassReady else { return }
+        geassReady = false
+        flash(.red)
+        shakeT = 0.5
+        for e in enemies { e.stun = 3.5; e.windup = 0 }
+        GeassVoice.say("Obey me!", as: "Lelouch")
+    }
+
+    // Vision and chapters ---------------------------------------------------------------
+    private func startVision() {
+        phase = .vision
+        combatMode = false
+        keyLabel = ""
+        speaker = ""
+        caption = chapter.vision
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.5) { [weak self] in self?.nextChapter() }
+    }
+
+    private func nextChapter() {
+        guard phase == .vision else { return }
+        if index + 1 < chapterCount {
+            index += 1
+            UserDefaults.standard.set(index, forKey: "geassChapter")
+            loadChapter()
+        } else {
+            phase = .finished
+            caption = "THE END"
+            UserDefaults.standard.set(0, forKey: "geassChapter")
+        }
+    }
+
+    func skip() {
+        GeassVoice.stop()
+        if phase == .finished {
+            index = 0
+            UserDefaults.standard.set(0, forKey: "geassChapter")
+            loadChapter()
+            return
+        }
+        phase = .vision
+        nextChapter()
+    }
+}
+
+// MARK: - 7. VIEWS ------------------------------------------------------------------------
+
+struct GeassSceneView: UIViewRepresentable {
+    let game: GeassGame
+
+    func makeUIView(context: Context) -> SCNView {
+        let v = SCNView()
+        v.scene = game.scene
+        v.pointOfView = game.cameraNode
+        v.antialiasingMode = .multisampling4X
+        v.isPlaying = true
+        v.backgroundColor = UIColor.black
+        return v
+    }
+
+    func updateUIView(_ uiView: SCNView, context: Context) {}
+}
+
+struct GeassJoystick: View {
+    var onChange: (CGVector) -> Void
+    @State private var knob = CGSize.zero
+    private let radius: CGFloat = 60
+
+    var body: some View {
+        ZStack {
+            Circle().fill(Color.white.opacity(0.15)).frame(width: radius * 2, height: radius * 2)
+            Circle().fill(Color.white.opacity(0.55)).frame(width: 52, height: 52).offset(knob)
+        }
+        .contentShape(Circle())
+        .gesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { v in
+                    let dx = v.translation.width
+                    let dy = v.translation.height
+                    let d = hypot(dx, dy)
+                    let k: CGFloat = d > radius ? radius / d : 1
+                    knob = CGSize(width: dx * k, height: dy * k)
+                    onChange(CGVector(dx: dx * k / radius, dy: dy * k / radius))
+                }
+                .onEnded { _ in
+                    knob = CGSize.zero
+                    onChange(CGVector.zero)
+                }
+        )
+    }
+}
+
+struct GeassGameView: View {
+    var onExit: () -> Void
+    @StateObject private var game = GeassGame()
+
+    var body: some View {
+        ZStack {
+            GeassSceneView(game: game).ignoresSafeArea()
+            if let c = game.flashColor {
+                c.opacity(0.45).ignoresSafeArea().allowsHitTesting(false)
+            }
+            VStack(spacing: 8) {
+                HStack(alignment: .top) {
+                    roundButton("✕") {
+                        GeassVoice.stop()
+                        onExit()
+                    }
+                    Spacer()
+                    VStack(spacing: 2) {
+                        Text("Chapter \(game.chapter.id): \(game.chapter.title)").font(.subheadline.bold())
+                        Text(game.chapter.season).font(.caption2)
+                    }
+                    .padding(8)
+                    .background(Color.black.opacity(0.5))
+                    .foregroundColor(.white)
+                    .cornerRadius(10)
+                    Spacer()
+                    roundButton("⏭") { game.skip() }
+                }
+                if game.phase == .fight && game.combatMode {
+                    bars
+                }
+                Spacer()
+                bottom
+            }
+            .padding()
+        }
+    }
+
+    private func roundButton(_ t: String, _ f: @escaping () -> Void) -> some View {
+        Button(action: f) {
+            Text(t)
+                .font(.system(size: 18, weight: .bold))
+                .foregroundColor(.white)
+                .frame(width: 38, height: 38)
+                .background(Color.black.opacity(0.5))
+                .clipShape(Circle())
+        }
+    }
+
+    private var bars: some View {
+        VStack(spacing: 4) {
+            HStack {
+                Text("HP").font(.caption.bold()).foregroundColor(.white)
+                ProgressView(value: max(0, game.hp), total: 100).tint(.green)
+            }
+            HStack {
+                Text(game.phaseText).font(.caption.bold()).foregroundColor(.white)
+                ProgressView(value: max(0, game.bossFrac), total: 1).tint(.red)
+            }
+        }
+        .padding(8)
+        .background(Color.black.opacity(0.45))
+        .cornerRadius(10)
+    }
+
+    private func pill(_ t: String, _ c: Color, _ f: @escaping () -> Void) -> some View {
+        Button(action: f) {
+            Text(t)
+                .font(.subheadline.bold())
+                .foregroundColor(.white)
+                .padding(.horizontal, 18)
+                .padding(.vertical, 12)
+                .background(c)
+                .clipShape(Capsule())
+        }
+    }
+
+    @ViewBuilder private var bottom: some View {
+        switch game.phase {
+        case .travel:
+            VStack(spacing: 10) {
+                panel { Text(game.caption).font(.footnote) }
+                HStack {
+                    GeassJoystick { game.joy = $0 }
+                    Spacer()
+                }
+            }
+        case .dialogue:
+            VStack(alignment: .leading, spacing: 8) {
+                panel {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(game.speaker).font(.subheadline).bold()
+                        Text(game.caption).font(.body)
+                    }
+                }
+                pill("Next", .blue) { game.next() }
+            }
+        case .fight:
+            if game.combatMode {
+                VStack(spacing: 8) {
+                    panel { Text(game.caption).font(.footnote) }
+                    HStack(alignment: .bottom) {
+                        GeassJoystick { game.joy = $0 }
+                        Spacer()
+                        VStack(spacing: 8) {
+                            if game.geassReady {
+                                pill("GEASS", .purple) { game.useGeass() }
+                            }
+                            HStack(spacing: 8) {
+                                pill("DODGE", .gray) { game.dodge() }
+                                pill("LIGHT", .orange) { game.attack(heavy: false) }
+                            }
+                            pill("HEAVY", .red) { game.attack(heavy: true) }
+                        }
+                    }
+                }
+            } else {
+                VStack(spacing: 8) {
+                    panel { Text(game.caption).font(.footnote) }
+                    if !game.keyLabel.isEmpty {
+                        pill(game.keyLabel, .red) { game.pressKey() }
+                    }
+                }
+            }
+        case .vision:
+            panel { Text(game.caption).font(.footnote).italic() }
+        case .finished:
+            VStack(spacing: 8) {
+                panel { Text("THE END").font(.title).bold() }
+                pill("Play again", .blue) { game.skip() }
+            }
+        }
+    }
+
+    private func panel<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        content()
+            .foregroundColor(.white)
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.black.opacity(0.6))
+            .cornerRadius(12)
     }
 }
