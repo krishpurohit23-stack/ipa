@@ -6386,7 +6386,7 @@ final class CrimeScene: SKScene {
     }
 }
 
-// MARK: - Code Geass (story, characters, voice from the hand-off file)
+// MARK: - Code Geass (story, characters, voice)
 // =====================================================================================
 // CodeGeassGame.swift   (single-file hand-off)
 // =====================================================================================
@@ -7230,55 +7230,120 @@ enum GeassWorld {
 
 // MARK: - 5. FIGHT PLANS (one per chapter) ---------------------------------------------
 
+struct GeassWave {
+    let grunts: Int
+    let gunners: Int
+    let heavies: Int
+}
+
+private func GWV(_ a: Int, _ b: Int, _ c: Int) -> GeassWave {
+    return GeassWave(grunts: a, gunners: b, heavies: c)
+}
+
 enum GeassFightKind {
     case none
     case keys([String])
-    case battle(String, Int, CGFloat)                 // enemy model, count, hp each
-    case boss(String, Int, CGFloat, String)           // name, phases, story takes over at this hp fraction (0 = fight to the end), text then
+    case waves([GeassWave])
+    case boss(String, Int, CGFloat, String)      // name, phases, story takes over at this hp fraction (0 = fight to the end), text then
 }
 
 enum GeassFightPlan {
+    // the main fight after the conversation
     static func plan(for id: Int) -> GeassFightKind {
         switch id {
         case 1: return .keys(["Accept Contract"])
         case 2: return .keys(["Fire"])
-        case 4: return .battle("Knightmare", 3, 60)
+        case 4: return .waves([GWV(2, 1, 1), GWV(1, 2, 1), GWV(0, 1, 2)])
         case 6: return .boss("Suzaku", 3, 0.3, "A message from Cornelia arrives. Suzaku hesitates and the fight breaks off.")
         case 7: return .boss("Cornelia", 3, 0, "")
         case 8: return .keys(["Trigger the Landslide"])
         case 9: return .keys(["Use Geass", "Fire"])
         case 10: return .boss("Suzaku", 3, 0.35, "Suzaku overpowers you and takes you to the Emperor.")
-        case 13: return .battle("Knightmare", 4, 60)
+        case 13: return .waves([GWV(2, 1, 0), GWV(2, 2, 0), GWV(0, 0, 2)])
         case 15: return .keys(["Move 1", "Move 2", "Move 3 - Checkmate"])
         case 16: return .boss("Xingke", 3, 0, "")
-        case 17: return .keys(["Protect Lelouch"])
-        case 18: return .battle("Knightmare", 4, 70)
+        case 17: return .waves([GWV(3, 0, 0), GWV(2, 1, 0)])
+        case 18: return .waves([GWV(2, 1, 1), GWV(2, 2, 1), GWV(0, 0, 3)])
         case 22: return .boss("Charles", 3, 0, "")
         case 23: return .boss("Charles", 3, 0, "")
-        case 24: return .battle("Knightmare", 5, 60)
+        case 24: return .waves([GWV(3, 2, 0), GWV(0, 0, 2), GWV(2, 2, 1)])
         case 26: return .keys(["Swing the sword"])
         default: return .none
         }
     }
+
+    // enemies that jump you while you walk to the marker
+    static func ambush(for id: Int) -> GeassWave? {
+        switch id {
+        case 4: return GWV(2, 1, 0)
+        case 6: return GWV(0, 3, 0)
+        case 7: return GWV(2, 2, 0)
+        case 8: return GWV(3, 0, 0)
+        case 9: return GWV(0, 2, 0)
+        case 10: return GWV(2, 1, 0)
+        case 13: return GWV(2, 1, 0)
+        case 16: return GWV(3, 0, 0)
+        case 18: return GWV(2, 2, 0)
+        case 19: return GWV(3, 1, 0)
+        case 22: return GWV(2, 2, 0)
+        case 23: return GWV(2, 2, 0)
+        case 24: return GWV(3, 0, 1)
+        default: return nil
+        }
+    }
 }
+
+enum GeassEnemyKind { case grunt, gunner, heavy, boss }
 
 final class GeassEnemy {
     let node: SCNNode
+    let kind: GeassEnemyKind
     var hp: CGFloat
     let maxHp: CGFloat
     var cd: Float = Float.random(in: 0.6...1.6)
     var windup: Float = 0
     var stun: Float = 0
     var dead = false
-    let boss: Bool
     var speed: Float
+    var special: Float = 3
+    var dashT: Float = 0
+    var dashFrames = 0
+    var dashDX: Float = 0
+    var dashDZ: Float = 0
+    var dashHit = false
+    var strafe: Float = Bool.random() ? 1 : -1
+    var ring: SCNNode?
+    let barFill: SCNNode
 
-    init(node: SCNNode, hp: CGFloat, boss: Bool, speed: Float) {
+    init(node: SCNNode, kind: GeassEnemyKind, hp: CGFloat, speed: Float) {
         self.node = node
+        self.kind = kind
         self.hp = hp
         self.maxHp = hp
-        self.boss = boss
         self.speed = speed
+        let bar = SCNNode()
+        bar.position = SCNVector3(0, kind == .heavy ? 4.8 : (kind == .boss ? 3.6 : 3.0), 0)
+        bar.constraints = [SCNBillboardConstraint()]
+        let back = SCNPlane(width: 1.4, height: 0.14)
+        back.firstMaterial?.diffuse.contents = UIColor(white: 0, alpha: 0.7)
+        back.firstMaterial?.lightingModel = .constant
+        back.firstMaterial?.isDoubleSided = true
+        bar.addChildNode(SCNNode(geometry: back))
+        let front = SCNPlane(width: 1.4, height: 0.14)
+        front.firstMaterial?.diffuse.contents = UIColor.red
+        front.firstMaterial?.lightingModel = .constant
+        front.firstMaterial?.isDoubleSided = true
+        let f = SCNNode(geometry: front)
+        f.position = SCNVector3(0, 0, 0.01)
+        bar.addChildNode(f)
+        node.addChildNode(bar)
+        self.barFill = f
+    }
+
+    func updateBar() {
+        let f = Float(max(0, min(1, hp / maxHp)))
+        barFill.scale = SCNVector3(f, 1, 1)
+        barFill.position = SCNVector3(-0.7 * (1 - f), 0, 0.01)
     }
 }
 
@@ -7286,6 +7351,13 @@ struct GeassPatrol {
     let node: SCNNode
     var dir: Float
     let speed: Float
+}
+
+struct GeassShot {
+    let node: SCNNode
+    var dx: Float
+    var dz: Float
+    var life: Float
 }
 
 // MARK: - 6. GAME ------------------------------------------------------------------------
@@ -7299,11 +7371,13 @@ final class GeassGame: ObservableObject {
     @Published var caption = ""
     @Published var hp: Double = 100
     @Published var bossFrac: Double = 1
+    @Published var showBoss = false
     @Published var enemiesLeft = 0
     @Published var phaseText = ""
     @Published var keyLabel = ""
-    @Published var combatMode = false
+    @Published var inAction = false
     @Published var geassReady = true
+    @Published var combo = 0
     @Published var flashColor: Color? = nil
 
     let scene = SCNScene()
@@ -7324,13 +7398,25 @@ final class GeassGame: ObservableObject {
     private var plan: GeassFightKind = .none
     private var keyIndex = 0
     private var enemies: [GeassEnemy] = []
+    private var shots: [GeassShot] = []
+    private var orbs: [SCNNode] = []
+    private var waves: [GeassWave] = []
+    private var waveIndex = 0
+    private var spawningNext = false
+    private var bossEnemy: GeassEnemy?
+    private var bossPhase = 1
+    private var ambushDone = false
     private var atkCD: Float = 0
     private var dodgeCD: Float = 0
     private var dodgeT: Float = 0
     private var dodgeDX: Float = 0
     private var dodgeDZ: Float = 0
     private var invuln: Float = 0
+    private var comboT: Float = 0
+    private var chain = 0
+    private var chainT: Float = 0
     private var combatEnded = false
+    private var deathLock = false
     private var shakeT: Float = 0
 
     var chapter: GeassChapter { GeassStory.chapters[index] }
@@ -7367,7 +7453,7 @@ final class GeassGame: ObservableObject {
 
         cameraNode.camera = SCNCamera()
         cameraNode.camera?.zFar = 300
-        cameraNode.camera?.fieldOfView = 60
+        cameraNode.camera?.fieldOfView = 55
         cameraNode.position = SCNVector3(0, 6, 18)
         scene.rootNode.addChildNode(cameraNode)
         scene.rootNode.addChildNode(stage)
@@ -7376,10 +7462,21 @@ final class GeassGame: ObservableObject {
     func loadChapter() {
         stage.childNodes.forEach { $0.removeFromParentNode() }
         enemies = []
+        shots = []
+        orbs = []
         patrols = []
+        waves = []
+        bossEnemy = nil
+        plan = .none
         combatEnded = false
-        combatMode = false
+        deathLock = false
+        ambushDone = false
+        spawningNext = false
+        inAction = false
+        showBoss = false
         keyLabel = ""
+        hp = 100
+        combo = 0
         let c = chapter
 
         let mood = GeassWorld.mood(c.id)
@@ -7414,6 +7511,7 @@ final class GeassGame: ObservableObject {
         player.position = SCNVector3(0, 0, 8)
         player.eulerAngles.y = .pi
         GeassCharacters.startIdle(player)
+        GeassCharacters.attachSword(player)
         stage.addChildNode(player)
         walking = false
 
@@ -7426,7 +7524,7 @@ final class GeassGame: ObservableObject {
             stage.addChildNode(npc)
         }
 
-        // stealth chapters: patrolling guards
+        // stealth chapters: patrolling guards (they attack if they spot you)
         if c.id == 1 || c.id == 2 {
             let count = c.id == 1 ? 2 : 3
             let zs: [Float] = [3, -2, -6]
@@ -7442,36 +7540,58 @@ final class GeassGame: ObservableObject {
         cameraNode.position = SCNVector3(0, 6, 18)
         phase = .travel
         speaker = ""
-        caption = c.travel + (patrols.isEmpty ? "" : "  (Don't get close to the guards!)")
+        var hint = c.travel
+        if !patrols.isEmpty { hint += "  (Guards attack if they spot you!)" }
+        if GeassFightPlan.ambush(for: c.id) != nil { hint += "  (Enemies ahead!)" }
+        caption = hint
         GeassCharacters.stopWalking(player)
     }
 
     // Loop ------------------------------------------------------------------------------
-    private var isCombat: Bool {
+    private var isCombatPlan: Bool {
         switch plan {
-        case .battle, .boss: return true
+        case .waves, .boss: return true
         default: return false
         }
+    }
+
+    private func hasEnemies() -> Bool {
+        return enemies.contains(where: { !$0.dead })
     }
 
     private func tick() {
         let dt: Float = 1.0 / 60.0
         updateCamera()
+        updateShots()
+        updateOrbs()
         switch phase {
-        case .travel: updateTravel()
-        case .fight: updateFight(dt)
-        default: break
+        case .travel:
+            if hasEnemies() {
+                updateCombat(dt)
+            } else {
+                if inAction {
+                    inAction = false
+                    caption = "Area clear! Head to the marker."
+                }
+                moveFromJoystick(0.12)
+            }
+            updateTravelExtras()
+        case .fight:
+            updateFight(dt)
+        default:
+            break
         }
     }
 
     private func updateCamera() {
-        var target = SCNVector3(player.position.x, player.position.y + 6, player.position.z + 10)
+        var target = SCNVector3(player.position.x, player.position.y + 5.5, player.position.z + 9)
         var look = SCNVector3(player.position.x, 1.5, player.position.z)
         if phase == .dialogue {
             target = SCNVector3(markerPos.x + 4.5, 2.6, markerPos.z + 3)
             look = SCNVector3(markerPos.x - 0.5, 1.7, markerPos.z - 1.5)
-        } else if phase == .fight && isCombat {
-            target = SCNVector3(player.position.x, 7.5, player.position.z + 11)
+        } else if hasEnemies() || !shots.isEmpty {
+            target = SCNVector3(player.position.x, 8, player.position.z + 12)
+            look = SCNVector3(player.position.x, 1.0, player.position.z - 2)
         }
         let cp = cameraNode.position
         var nx = cp.x + (target.x - cp.x) * 0.07
@@ -7504,8 +7624,9 @@ final class GeassGame: ObservableObject {
         }
     }
 
-    private func updateTravel() {
-        moveFromJoystick(0.12)
+    private func updateTravelExtras() {
+        // patrols: if one spots you, they all attack
+        var spotted = false
         for i in 0..<patrols.count {
             var p = patrols[i]
             p.node.position.x += p.dir * p.speed
@@ -7515,21 +7636,35 @@ final class GeassGame: ObservableObject {
             patrols[i] = p
             let dx = player.position.x - p.node.position.x
             let dz = player.position.z - p.node.position.z
-            if hypot(dx, dz) < 3.0 {
-                caught()
-                return
-            }
+            if hypot(dx, dz) < 5.0 { spotted = true }
         }
+        if spotted && !patrols.isEmpty {
+            for p in patrols {
+                GeassCharacters.stopWalking(p.node)
+                GeassCharacters.attachSword(p.node)
+                enemies.append(GeassEnemy(node: p.node, kind: .grunt, hp: 45, speed: 0.05))
+            }
+            patrols = []
+            inAction = true
+            caption = "Spotted! Fight your way out!"
+            flash(.red)
+            shakeT = 0.4
+            updateCounts()
+            return
+        }
+        // ambush while walking in
+        if !ambushDone && player.position.z < 2, let w = GeassFightPlan.ambush(for: chapter.id) {
+            ambushDone = true
+            spawnWave(w, aheadZ: true)
+            caption = "Ambush! Fight your way through!"
+            flash(.red)
+            shakeT = 0.4
+            return
+        }
+        if hasEnemies() { return }
         let ex = player.position.x - markerPos.x
         let ez = player.position.z - markerPos.z
         if hypot(ex, ez) < 1.6 { startDialogue() }
-    }
-
-    private func caught() {
-        player.position = SCNVector3(0, 0, 8)
-        caption = "Spotted! Back to the start..."
-        flash(.red)
-        shakeT = 0.4
     }
 
     func flash(_ c: Color) {
@@ -7541,7 +7676,7 @@ final class GeassGame: ObservableObject {
     private func startDialogue() {
         GeassCharacters.stopWalking(player)
         walking = false
-        joy = .zero
+        joy = CGVector.zero
         phase = .dialogue
         lineIndex = 0
         showLine()
@@ -7566,21 +7701,15 @@ final class GeassGame: ObservableObject {
         startFight()
     }
 
-    private func prepWeapon() {
-        let f = chapter.fight.lowercased()
-        if f.contains("fire") && !f.contains("sword") {
-            GeassCharacters.attachGun(player)
-        } else {
-            GeassCharacters.attachSword(player)
-        }
-    }
-
     private func startFight() {
         plan = GeassFightPlan.plan(for: chapter.id)
         hp = 100
         bossFrac = 1
+        showBoss = false
+        combo = 0
         geassReady = true
         combatEnded = false
+        deathLock = false
         switch plan {
         case .none:
             startVision()
@@ -7588,17 +7717,24 @@ final class GeassGame: ObservableObject {
             phase = .fight
             keyIndex = 0
             keyLabel = labels[0]
-            combatMode = false
+            inAction = false
             caption = chapter.fight
             let f = chapter.fight.lowercased()
             if f.contains("sword") { GeassCharacters.attachSword(player) } else if f.contains("fire") { GeassCharacters.attachGun(player) }
-        case .battle, .boss:
+        case .waves(let w):
             phase = .fight
-            combatMode = true
             keyLabel = ""
-            prepWeapon()
+            waves = w
+            waveIndex = 0
             player.position = SCNVector3(markerPos.x, 0, markerPos.z + 4)
-            spawnForPlan()
+            spawnWave(w[0], aheadZ: false)
+            caption = "Wave 1! " + chapter.fight
+        case .boss(let name, _, _, _):
+            phase = .fight
+            keyLabel = ""
+            player.position = SCNVector3(markerPos.x, 0, markerPos.z + 4)
+            spawnBoss(name)
+            caption = chapter.fight
         }
     }
 
@@ -7642,42 +7778,76 @@ final class GeassGame: ObservableObject {
         }
     }
 
-    // Combat ----------------------------------------------------------------------------
-    private func spawnForPlan() {
-        enemies.forEach { $0.node.removeFromParentNode() }
-        enemies = []
-        switch plan {
-        case .battle(let kind, let count, let each):
-            for i in 0..<count {
-                let node: SCNNode
-                if kind == "Knightmare" {
-                    node = GeassWorld.knightmare([gRGB(120, 40, 45), gRGB(110, 110, 125), gRGB(60, 80, 120)][i % 3])
-                } else {
-                    node = GeassCharacters.make(kind)
-                }
-                let a = Float(i) / Float(max(1, count)) * Float.pi + Float.pi * 0.1
-                node.position = SCNVector3(max(-13, min(13, player.position.x + cos(a) * 9)), 0, player.position.z - 7 - sin(a) * 3)
-                stage.addChildNode(node)
-                enemies.append(GeassEnemy(node: node, hp: each, boss: false, speed: 0.045))
+    // Spawning --------------------------------------------------------------------------
+    private func spawnWave(_ w: GeassWave, aheadZ: Bool) {
+        var list: [GeassEnemyKind] = []
+        for _ in 0..<w.grunts { list.append(.grunt) }
+        for _ in 0..<w.gunners { list.append(.gunner) }
+        for _ in 0..<w.heavies { list.append(.heavy) }
+        let n = list.count
+        for (i, k) in list.enumerated() {
+            var node = SCNNode()
+            var hpv: CGFloat = 45
+            var sp: Float = 0.05
+            switch k {
+            case .grunt:
+                node = GeassCharacters.make("Soldier")
+                GeassCharacters.attachSword(node)
+            case .gunner:
+                node = GeassCharacters.make("Soldier")
+                GeassCharacters.attachGun(node)
+                hpv = 32
+                sp = 0.045
+            case .heavy:
+                node = GeassWorld.knightmare([gRGB(120, 40, 45), gRGB(110, 110, 125), gRGB(60, 80, 120)][i % 3])
+                hpv = 130
+                sp = 0.035
+            case .boss:
+                break
             }
-            enemiesLeft = count
-            phaseText = "Enemies: \(count)"
-            bossFrac = 1
-        case .boss(let name, let phases, _, _):
-            let node = GeassCharacters.make(name)
-            node.scale = SCNVector3(node.scale.x * 1.25, node.scale.y * 1.25, node.scale.z * 1.25)
-            GeassCharacters.attachSword(node)
-            node.position = SCNVector3(player.position.x, 0, player.position.z - 9)
+            let t = Float(i) / Float(max(1, n - 1))
+            let x = max(-13, min(13, -9 + t * 18 + Float.random(in: -1...1)))
+            let z = aheadZ ? player.position.z - 11 - Float.random(in: 0...4) : player.position.z - 8 - Float.random(in: 0...5)
+            node.position = SCNVector3(x, 0, max(-17, z))
             stage.addChildNode(node)
-            enemies.append(GeassEnemy(node: node, hp: CGFloat(90 * phases), boss: true, speed: 0.05))
-            enemiesLeft = 1
-            phaseText = "Phase 1/\(phases)"
-            bossFrac = 1
-        default:
-            break
+            enemies.append(GeassEnemy(node: node, kind: k, hp: hpv, speed: sp))
+        }
+        inAction = true
+        updateCounts()
+    }
+
+    private func spawnBoss(_ name: String) {
+        let node = GeassCharacters.make(name)
+        node.scale = SCNVector3(node.scale.x * 1.25, node.scale.y * 1.25, node.scale.z * 1.25)
+        GeassCharacters.attachSword(node)
+        node.position = SCNVector3(player.position.x, 0, max(-17, player.position.z - 9))
+        stage.addChildNode(node)
+        var phases = 3
+        if case .boss(_, let ph, _, _) = plan { phases = ph }
+        let b = GeassEnemy(node: node, kind: .boss, hp: CGFloat(90 * phases), speed: 0.05)
+        enemies.append(b)
+        bossEnemy = b
+        bossPhase = 1
+        showBoss = true
+        bossFrac = 1
+        inAction = true
+        phaseText = "Phase 1/\(phases)"
+        updateCounts()
+    }
+
+    private func updateCounts() {
+        let left = enemies.filter { !$0.dead }.count
+        enemiesLeft = left
+        if phase == .fight {
+            if case .waves = plan {
+                phaseText = "Wave \(waveIndex + 1)/\(waves.count)  Enemies: \(left)"
+            }
+        } else {
+            phaseText = "Enemies: \(left)"
         }
     }
 
+    // Combat ----------------------------------------------------------------------------
     private func hurtPlayer(_ d: Double) {
         if invuln > 0 || combatEnded { return }
         hp -= d
@@ -7687,10 +7857,25 @@ final class GeassGame: ObservableObject {
     }
 
     private func updateFight(_ dt: Float) {
-        guard isCombat, !combatEnded else { return }
+        switch plan {
+        case .waves, .boss:
+            if combatEnded { return }
+            updateCombat(dt)
+            progressFight()
+        default:
+            break
+        }
+    }
+
+    private func updateCombat(_ dt: Float) {
         atkCD = max(0, atkCD - dt)
         dodgeCD = max(0, dodgeCD - dt)
         invuln = max(0, invuln - dt)
+        chainT = max(0, chainT - dt)
+        if comboT > 0 {
+            comboT -= dt
+            if comboT <= 0 { combo = 0 }
+        }
         if dodgeT > 0 {
             dodgeT -= dt
             player.position.x = max(-14, min(14, player.position.x + dodgeDX))
@@ -7698,83 +7883,212 @@ final class GeassGame: ObservableObject {
         } else {
             moveFromJoystick(0.11)
         }
+        enemiesAI(dt)
+        if hp <= 0 { handleDeath() }
+    }
 
-        var phases = 1
-        if case .boss(_, let ph, _, _) = plan { phases = ph }
-
+    private func enemiesAI(_ dt: Float) {
         for e in enemies where !e.dead {
             let dx = player.position.x - e.node.position.x
             let dz = player.position.z - e.node.position.z
             let d = max(0.01, hypot(dx, dz))
             e.node.eulerAngles.y = atan2(dx, dz)
+            e.updateBar()
             if e.stun > 0 {
                 e.stun -= dt
                 continue
             }
-            if e.windup > 0 {
-                e.windup -= dt
-                if e.windup <= 0 {
-                    if d < (e.boss ? 3.5 : 3.0) { hurtPlayer(e.boss ? 14 : 8) }
-                    e.cd = e.boss ? 1.1 : 1.6
-                    GeassCharacters.slash(e.node)
-                }
-                continue
+            switch e.kind {
+            case .grunt: meleeAI(e, d, dx, dz, dt, 2.3, 3.0, 8, 0.6)
+            case .boss: bossAI(e, d, dx, dz, dt)
+            case .gunner: gunnerAI(e, d, dx, dz, dt)
+            case .heavy: heavyAI(e, d, dx, dz, dt)
             }
-            if d > (e.boss ? 2.6 : 2.0) {
-                e.node.position.x += dx / d * e.speed
-                e.node.position.z += dz / d * e.speed
-            }
-            e.cd -= dt
-            if d < (e.boss ? 3.2 : 2.5) && e.cd <= 0 {
-                e.windup = e.boss ? 0.45 : 0.6
-                e.node.runAction(.sequence([.scale(by: 1.12, duration: 0.2), .scale(by: 1 / 1.12, duration: 0.2)]))
-            }
+            e.node.position.x = max(-15, min(15, e.node.position.x))
+            e.node.position.z = max(-18, min(15, e.node.position.z))
         }
+    }
 
-        // boss phases and story takeover
-        if case .boss(_, _, let endAt, let endText) = plan, let b = enemies.first {
-            let frac = Double(max(0, b.hp) / b.maxHp)
-            bossFrac = frac
-            let p = min(phases, Int((1 - frac) * Double(phases)) + 1)
-            phaseText = "Phase \(p)/\(phases)"
-            b.speed = 0.05 * (1 + 0.25 * Float(p - 1))
-            if endAt > 0 && frac <= Double(endAt) {
-                endCombat(text: endText)
-                return
+    private func meleeAI(_ e: GeassEnemy, _ d: Float, _ dx: Float, _ dz: Float, _ dt: Float, _ reach: Float, _ hitR: Float, _ dmg: Double, _ wind: Float) {
+        if e.windup > 0 {
+            e.windup -= dt
+            if e.windup <= 0 {
+                if d < hitR { hurtPlayer(dmg) }
+                e.cd = e.kind == .boss ? 1.0 : 1.6
+                GeassCharacters.slash(e.node)
             }
-        }
-        if enemies.allSatisfy({ $0.dead }) {
-            endCombat(text: "Victory!")
             return
         }
-        if hp <= 0 {
-            var takeover: String? = nil
-            if case .boss(_, _, let endAt, let endText) = plan, endAt > 0 { takeover = endText }
-            if let t = takeover {
-                endCombat(text: t)
-            } else {
-                combatEnded = true
-                caption = "Defeated... try again."
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) { [weak self] in self?.restartFight() }
-            }
+        if d > reach {
+            e.node.position.x += dx / d * e.speed
+            e.node.position.z += dz / d * e.speed
+        }
+        e.cd -= dt
+        if d < reach + 0.5 && e.cd <= 0 {
+            e.windup = wind
+            e.node.runAction(.sequence([.scale(by: 1.12, duration: 0.2), .scale(by: 1 / 1.12, duration: 0.2)]))
         }
     }
 
-    private func endCombat(text: String) {
-        combatEnded = true
-        combatMode = false
-        caption = text
-        for e in enemies where !e.dead { e.stun = 99 }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) { [weak self] in self?.startVision() }
+    private func gunnerAI(_ e: GeassEnemy, _ d: Float, _ dx: Float, _ dz: Float, _ dt: Float) {
+        if e.windup > 0 {
+            e.windup -= dt
+            if e.windup <= 0 {
+                fireShot(e)
+                e.cd = 1.8
+                GeassCharacters.aim(e.node)
+            }
+            return
+        }
+        if d < 6 {
+            e.node.position.x -= dx / d * e.speed
+            e.node.position.z -= dz / d * e.speed
+        } else if d > 10 {
+            e.node.position.x += dx / d * e.speed
+            e.node.position.z += dz / d * e.speed
+        } else {
+            e.node.position.x += (-dz / d) * e.speed * 0.6 * e.strafe
+            e.node.position.z += (dx / d) * e.speed * 0.6 * e.strafe
+        }
+        e.cd -= dt
+        if e.cd <= 0 && d < 16 {
+            e.windup = 0.55
+            e.node.runAction(.sequence([.scale(by: 1.1, duration: 0.25), .scale(by: 1 / 1.1, duration: 0.25)]))
+        }
     }
 
-    private func restartFight() {
-        hp = 100
-        combatEnded = false
-        geassReady = true
-        player.position = SCNVector3(markerPos.x, 0, markerPos.z + 4)
-        caption = chapter.fight
-        spawnForPlan()
+    private func heavyAI(_ e: GeassEnemy, _ d: Float, _ dx: Float, _ dz: Float, _ dt: Float) {
+        if e.windup > 0 {
+            e.windup -= dt
+            if e.windup <= 0 {
+                if d < 4.2 { hurtPlayer(18) }
+                e.ring?.removeFromParentNode()
+                e.ring = nil
+                e.cd = 2.2
+                shakeT = 0.3
+                slamFX(e.node.position)
+            }
+            return
+        }
+        if d > 3.2 {
+            e.node.position.x += dx / d * e.speed
+            e.node.position.z += dz / d * e.speed
+        }
+        e.cd -= dt
+        if d < 4.0 && e.cd <= 0 {
+            e.windup = 0.95
+            let r = SCNNode(geometry: SCNTorus(ringRadius: 3.8, pipeRadius: 0.1))
+            r.geometry?.firstMaterial?.diffuse.contents = UIColor.red
+            r.geometry?.firstMaterial?.emission.contents = UIColor.red
+            r.position = SCNVector3(e.node.position.x, 0.1, e.node.position.z)
+            r.runAction(.repeatForever(.sequence([.fadeOpacity(to: 0.3, duration: 0.15), .fadeOpacity(to: 1, duration: 0.15)])))
+            stage.addChildNode(r)
+            e.ring = r
+        }
+    }
+
+    private func bossAI(_ e: GeassEnemy, _ d: Float, _ dx: Float, _ dz: Float, _ dt: Float) {
+        if e.dashT > 0 {
+            e.dashT -= dt
+            if e.dashT <= 0 {
+                e.dashFrames = 14
+                e.dashHit = false
+            }
+            return
+        }
+        if e.dashFrames > 0 {
+            e.dashFrames -= 1
+            e.node.position.x += e.dashDX
+            e.node.position.z += e.dashDZ
+            let hx = player.position.x - e.node.position.x
+            let hz = player.position.z - e.node.position.z
+            if !e.dashHit && hypot(hx, hz) < 2.0 {
+                e.dashHit = true
+                hurtPlayer(16)
+            }
+            if e.dashFrames == 0 {
+                e.special = max(2.5, 5 - Float(bossPhase))
+                e.cd = 0.8
+            }
+            return
+        }
+        e.special -= dt
+        if e.special <= 0 && d > 4.5 && e.windup <= 0 {
+            e.dashT = 0.7
+            e.dashDX = dx / d * 0.6
+            e.dashDZ = dz / d * 0.6
+            let line = GeassWorld.box(stage, 1.4, 0.05, 10, UIColor.red.withAlphaComponent(0.55),
+                                      e.node.position.x + dx / d * 5, 0.06, e.node.position.z + dz / d * 5, glow: true)
+            line.eulerAngles.y = atan2(dx, dz)
+            line.runAction(.sequence([.wait(duration: 0.7), .removeFromParentNode()]))
+            return
+        }
+        meleeAI(e, d, dx, dz, dt, 2.6, 3.5, 14, 0.45)
+    }
+
+    private func fireShot(_ e: GeassEnemy) {
+        let sx = e.node.position.x
+        let sz = e.node.position.z
+        let dx = player.position.x - sx
+        let dz = player.position.z - sz
+        let d = max(0.01, hypot(dx, dz))
+        let g = SCNSphere(radius: 0.14)
+        g.firstMaterial?.diffuse.contents = UIColor.orange
+        g.firstMaterial?.emission.contents = UIColor.orange
+        let n = SCNNode(geometry: g)
+        n.position = SCNVector3(sx, 1.5, sz)
+        stage.addChildNode(n)
+        shots.append(GeassShot(node: n, dx: dx / d * 0.3, dz: dz / d * 0.3, life: 3))
+    }
+
+    private func updateShots() {
+        if shots.isEmpty { return }
+        var keep: [GeassShot] = []
+        for var s in shots {
+            s.node.position.x += s.dx
+            s.node.position.z += s.dz
+            s.life -= 1.0 / 60.0
+            let hx = s.node.position.x - player.position.x
+            let hz = s.node.position.z - player.position.z
+            if hypot(hx, hz) < 0.9 && invuln <= 0 && phase != .dialogue && phase != .vision {
+                hurtPlayer(7)
+                s.node.removeFromParentNode()
+                continue
+            }
+            if s.life <= 0 {
+                s.node.removeFromParentNode()
+                continue
+            }
+            keep.append(s)
+        }
+        shots = keep
+    }
+
+    private func updateOrbs() {
+        if orbs.isEmpty { return }
+        var keep: [SCNNode] = []
+        for o in orbs {
+            let hx = o.position.x - player.position.x
+            let hz = o.position.z - player.position.z
+            if hypot(hx, hz) < 1.6 {
+                hp = min(100, hp + 20)
+                o.removeFromParentNode()
+            } else {
+                keep.append(o)
+            }
+        }
+        orbs = keep
+    }
+
+    private func dropOrb(_ p: SCNVector3) {
+        let g = SCNSphere(radius: 0.28)
+        g.firstMaterial?.diffuse.contents = UIColor.green
+        g.firstMaterial?.emission.contents = UIColor.green
+        let n = SCNNode(geometry: g)
+        n.position = SCNVector3(p.x, 0.5, p.z)
+        n.runAction(.repeatForever(.sequence([.moveBy(x: 0, y: 0.3, z: 0, duration: 0.5), .moveBy(x: 0, y: -0.3, z: 0, duration: 0.5)])))
+        stage.addChildNode(n)
+        orbs.append(n)
     }
 
     private func spark(_ p: SCNVector3) {
@@ -7787,29 +8101,67 @@ final class GeassGame: ObservableObject {
         s.runAction(.sequence([.group([.scale(to: 2.4, duration: 0.2), .fadeOut(duration: 0.2)]), .removeFromParentNode()]))
     }
 
-    private func damage(_ e: GeassEnemy, _ amount: CGFloat, heavy: Bool) {
+    private func slamFX(_ p: SCNVector3) {
+        let r = SCNNode(geometry: SCNTorus(ringRadius: 1.0, pipeRadius: 0.12))
+        r.geometry?.firstMaterial?.emission.contents = UIColor.orange
+        r.geometry?.firstMaterial?.diffuse.contents = UIColor.orange
+        r.position = SCNVector3(p.x, 0.2, p.z)
+        stage.addChildNode(r)
+        r.runAction(.sequence([.group([.scale(to: 4.5, duration: 0.3), .fadeOut(duration: 0.3)]), .removeFromParentNode()]))
+    }
+
+    private func slashFX(heavy: Bool) {
+        let px = player.position.x
+        let pz = player.position.z
+        let a = player.eulerAngles.y
+        if heavy {
+            let r = SCNNode(geometry: SCNTorus(ringRadius: 2.2, pipeRadius: 0.08))
+            r.geometry?.firstMaterial?.emission.contents = UIColor.white
+            r.geometry?.firstMaterial?.diffuse.contents = UIColor.white
+            r.position = SCNVector3(px, 1.2, pz)
+            stage.addChildNode(r)
+            r.runAction(.sequence([.group([.scale(to: 1.6, duration: 0.25), .fadeOut(duration: 0.25)]), .removeFromParentNode()]))
+        } else {
+            let b = SCNNode(geometry: SCNBox(width: 0.12, height: 0.12, length: 2.8, chamferRadius: 0))
+            b.geometry?.firstMaterial?.emission.contents = UIColor.white
+            b.geometry?.firstMaterial?.diffuse.contents = UIColor.white
+            b.position = SCNVector3(px + sin(a) * 1.6, 1.4, pz + cos(a) * 1.6)
+            b.eulerAngles.y = a + 1.0
+            stage.addChildNode(b)
+            b.runAction(.sequence([.group([.rotateBy(x: 0, y: -2.0, z: 0, duration: 0.15), .fadeOut(duration: 0.18)]), .removeFromParentNode()]))
+        }
+    }
+
+    private func damage(_ e: GeassEnemy, _ amount: CGFloat, heavy: Bool, knock: Float) {
         e.hp -= amount
+        combo += 1
+        comboT = 2.2
         spark(e.node.position)
         let dx = e.node.position.x - player.position.x
         let dz = e.node.position.z - player.position.z
         let d = max(0.01, hypot(dx, dz))
-        e.node.position.x += dx / d * (heavy ? 0.8 : 0.4)
-        e.node.position.z += dz / d * (heavy ? 0.8 : 0.4)
-        if heavy || !e.boss { e.windup = 0 }
-        if e.hp <= 0 {
-            e.dead = true
-            GeassCharacters.fall(e.node)
-            e.node.runAction(.sequence([.wait(duration: 1.0), .fadeOut(duration: 0.4), .removeFromParentNode()]))
-            let left = enemies.filter { !$0.dead }.count
-            enemiesLeft = left
-            if !e.boss { phaseText = "Enemies: \(left)" }
-        }
+        let k: Float = e.kind == .heavy ? knock * 0.3 : (e.kind == .boss ? knock * 0.5 : knock)
+        e.node.position.x += dx / d * k
+        e.node.position.z += dz / d * k
+        if heavy || e.kind == .grunt || e.kind == .gunner { e.windup = 0 }
+        if heavy { shakeT = 0.18 }
+        e.updateBar()
+        if e.hp <= 0 { kill(e) }
+    }
+
+    private func kill(_ e: GeassEnemy) {
+        e.dead = true
+        e.ring?.removeFromParentNode()
+        e.ring = nil
+        GeassCharacters.fall(e.node)
+        e.node.runAction(.sequence([.wait(duration: 1.0), .fadeOut(duration: 0.4), .removeFromParentNode()]))
+        if Int.random(in: 0..<100) < 30 { dropOrb(e.node.position) }
+        if e.kind == .heavy { slamFX(e.node.position) }
+        updateCounts()
     }
 
     func attack(heavy: Bool) {
-        guard phase == .fight, isCombat, !combatEnded, atkCD <= 0 else { return }
-        atkCD = heavy ? 0.85 : 0.32
-        // auto-face the nearest enemy
+        guard hasEnemies(), !combatEnded, atkCD <= 0, phase == .travel || phase == .fight else { return }
         var nearest: GeassEnemy? = nil
         var best: Float = 5.5
         for e in enemies where !e.dead {
@@ -7823,23 +8175,35 @@ final class GeassGame: ObservableObject {
             player.eulerAngles.y = atan2(n.node.position.x - player.position.x, n.node.position.z - player.position.z)
         }
         GeassCharacters.slash(player)
+        slashFX(heavy: heavy)
+        var dmg: CGFloat = 44
+        var knock: Float = 0.8
+        if !heavy {
+            if chainT <= 0 { chain = 0 }
+            chain = (chain + 1) % 3
+            chainT = 0.9
+            let table: [CGFloat] = [14, 16, 28]
+            dmg = table[chain]
+            knock = chain == 2 ? 0.9 : 0.35
+        }
+        atkCD = heavy ? 0.85 : 0.3
         let range: Float = heavy ? 3.8 : 3.2
-        let dmg: CGFloat = heavy ? 44 : 18
         let fx = sin(player.eulerAngles.y)
         let fz = cos(player.eulerAngles.y)
         for e in enemies where !e.dead {
             let dx = e.node.position.x - player.position.x
             let dz = e.node.position.z - player.position.z
             let d = hypot(dx, dz)
-            if d < range + (e.boss ? 0.8 : 0) {
+            let reach = range + (e.kind == .boss ? 0.8 : (e.kind == .heavy ? 0.6 : 0))
+            if d < reach {
                 let dot = (dx * fx + dz * fz) / max(d, 0.01)
-                if dot > (heavy ? -0.2 : 0.3) { damage(e, dmg, heavy: heavy) }
+                if dot > (heavy ? -0.2 : 0.3) { damage(e, dmg, heavy: heavy, knock: knock) }
             }
         }
     }
 
     func dodge() {
-        guard phase == .fight, isCombat, !combatEnded, dodgeCD <= 0 else { return }
+        guard hasEnemies() || !shots.isEmpty, !combatEnded, dodgeCD <= 0 else { return }
         dodgeCD = 0.6
         dodgeT = 0.22
         invuln = 0.5
@@ -7855,18 +8219,138 @@ final class GeassGame: ObservableObject {
     }
 
     func useGeass() {
-        guard phase == .fight, isCombat, !combatEnded, geassReady else { return }
+        guard hasEnemies(), !combatEnded, geassReady else { return }
         geassReady = false
         flash(.red)
         shakeT = 0.5
-        for e in enemies { e.stun = 3.5; e.windup = 0 }
+        for e in enemies where !e.dead {
+            e.stun = e.kind == .boss ? 2.0 : 3.5
+            e.windup = 0
+            e.ring?.removeFromParentNode()
+            e.ring = nil
+        }
         GeassVoice.say("Obey me!", as: "Lelouch")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 12) { [weak self] in self?.geassReady = true }
+    }
+
+    // Fight progression and outcomes ----------------------------------------------------
+    private func progressFight() {
+        switch plan {
+        case .boss(_, let phases, let endAt, let endText):
+            guard let b = bossEnemy else { return }
+            let frac = Double(max(0, b.hp) / b.maxHp)
+            bossFrac = frac
+            let p = min(phases, Int((1 - frac) * Double(phases)) + 1)
+            if p != bossPhase {
+                bossPhase = p
+                if p > 1 {
+                    spawnWave(GWV(2, 0, 0), aheadZ: false)
+                    caption = "Phase \(p): reinforcements!"
+                }
+            }
+            phaseText = "Phase \(p)/\(phases)"
+            b.speed = 0.05 * (1 + 0.25 * Float(p - 1))
+            if endAt > 0 && frac <= Double(endAt) {
+                endCombat(text: endText)
+                return
+            }
+            if b.dead { endCombat(text: "Victory!") }
+        case .waves:
+            if !spawningNext && enemies.allSatisfy({ $0.dead }) {
+                if waveIndex + 1 < waves.count {
+                    spawningNext = true
+                    caption = "Wave cleared!"
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                        guard let self = self, self.phase == .fight, !self.combatEnded else { return }
+                        self.waveIndex += 1
+                        self.spawnWave(self.waves[self.waveIndex], aheadZ: false)
+                        self.caption = "Wave \(self.waveIndex + 1)!"
+                        self.spawningNext = false
+                    }
+                } else {
+                    endCombat(text: "Victory!")
+                }
+            }
+        default:
+            break
+        }
+    }
+
+    private func handleDeath() {
+        if deathLock { return }
+        deathLock = true
+        if phase == .fight {
+            if case .boss(_, _, let endAt, let endText) = plan, endAt > 0 {
+                endCombat(text: endText)
+                return
+            }
+            combatEnded = true
+            caption = "Defeated... try again."
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) { [weak self] in self?.restartFight() }
+        } else {
+            caption = "Defeated... try again."
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in self?.resetAmbush() }
+        }
+    }
+
+    private func clearEnemies() {
+        for e in enemies {
+            e.ring?.removeFromParentNode()
+            e.node.removeFromParentNode()
+        }
+        enemies = []
+        for s in shots { s.node.removeFromParentNode() }
+        shots = []
+    }
+
+    private func resetAmbush() {
+        clearEnemies()
+        hp = 100
+        combo = 0
+        deathLock = false
+        ambushDone = false
+        inAction = false
+        player.position = SCNVector3(0, 0, 8)
+        caption = chapter.travel
+    }
+
+    private func endCombat(text: String) {
+        combatEnded = true
+        inAction = false
+        showBoss = false
+        caption = text
+        for e in enemies where !e.dead { e.stun = 99 }
+        for s in shots { s.node.removeFromParentNode() }
+        shots = []
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) { [weak self] in self?.startVision() }
+    }
+
+    private func restartFight() {
+        clearEnemies()
+        hp = 100
+        combo = 0
+        combatEnded = false
+        deathLock = false
+        geassReady = true
+        spawningNext = false
+        player.position = SCNVector3(markerPos.x, 0, markerPos.z + 4)
+        caption = chapter.fight
+        switch plan {
+        case .waves(let w):
+            waves = w
+            waveIndex = 0
+            spawnWave(w[0], aheadZ: false)
+        case .boss(let name, _, _, _):
+            spawnBoss(name)
+        default:
+            break
+        }
     }
 
     // Vision and chapters ---------------------------------------------------------------
     private func startVision() {
         phase = .vision
-        combatMode = false
+        inAction = false
         keyLabel = ""
         speaker = ""
         caption = chapter.vision
@@ -7899,7 +8383,7 @@ final class GeassGame: ObservableObject {
     }
 }
 
-// MARK: - 7. VIEWS ------------------------------------------------------------------------
+// MARK: - 7. VIEWS (landscape) ------------------------------------------------------------
 
 struct GeassSceneView: UIViewRepresentable {
     let game: GeassGame
@@ -7920,12 +8404,12 @@ struct GeassSceneView: UIViewRepresentable {
 struct GeassJoystick: View {
     var onChange: (CGVector) -> Void
     @State private var knob = CGSize.zero
-    private let radius: CGFloat = 60
+    private let radius: CGFloat = 55
 
     var body: some View {
         ZStack {
             Circle().fill(Color.white.opacity(0.15)).frame(width: radius * 2, height: radius * 2)
-            Circle().fill(Color.white.opacity(0.55)).frame(width: 52, height: 52).offset(knob)
+            Circle().fill(Color.white.opacity(0.55)).frame(width: 48, height: 48).offset(knob)
         }
         .contentShape(Circle())
         .gesture(
@@ -7949,132 +8433,155 @@ struct GeassJoystick: View {
 struct GeassGameView: View {
     var onExit: () -> Void
     @StateObject private var game = GeassGame()
+    @State private var flipped = false
 
     var body: some View {
+        let sw = UIScreen.main.bounds.width
+        let sh = UIScreen.main.bounds.height
         ZStack {
-            GeassSceneView(game: game).ignoresSafeArea()
+            Color.black.ignoresSafeArea()
+            content
+                .frame(width: sh, height: sw)
+                .rotationEffect(.degrees(flipped ? -90 : 90))
+                .frame(width: sw, height: sh)
+        }
+        .ignoresSafeArea()
+    }
+
+    private var content: some View {
+        ZStack {
+            GeassSceneView(game: game)
             if let c = game.flashColor {
-                c.opacity(0.45).ignoresSafeArea().allowsHitTesting(false)
+                c.opacity(0.45).allowsHitTesting(false)
             }
-            VStack(spacing: 8) {
-                HStack(alignment: .top) {
-                    roundButton("✕") {
-                        GeassVoice.stop()
-                        onExit()
-                    }
-                    Spacer()
-                    VStack(spacing: 2) {
-                        Text("Chapter \(game.chapter.id): \(game.chapter.title)").font(.subheadline.bold())
-                        Text(game.chapter.season).font(.caption2)
-                    }
-                    .padding(8)
-                    .background(Color.black.opacity(0.5))
-                    .foregroundColor(.white)
-                    .cornerRadius(10)
-                    Spacer()
-                    roundButton("⏭") { game.skip() }
-                }
-                if game.phase == .fight && game.combatMode {
-                    bars
-                }
+            VStack(spacing: 6) {
+                topBar
                 Spacer()
                 bottom
             }
-            .padding()
+            .padding(.horizontal, 56)
+            .padding(.vertical, 8)
+        }
+        .ignoresSafeArea()
+    }
+
+    private var topBar: some View {
+        HStack(alignment: .top, spacing: 8) {
+            roundButton("✕") {
+                GeassVoice.stop()
+                onExit()
+            }
+            roundButton("⟲") { flipped.toggle() }
+            roundButton("⏭") { game.skip() }
+            Spacer()
+            VStack(spacing: 1) {
+                Text("Ch \(game.chapter.id): \(game.chapter.title)").font(.caption.bold())
+                Text(game.chapter.season).font(.caption2)
+            }
+            .padding(6)
+            .background(Color.black.opacity(0.5))
+            .foregroundColor(.white)
+            .cornerRadius(8)
+            Spacer()
+            if game.inAction {
+                bars.frame(width: 200)
+            }
         }
     }
 
     private func roundButton(_ t: String, _ f: @escaping () -> Void) -> some View {
         Button(action: f) {
             Text(t)
-                .font(.system(size: 18, weight: .bold))
+                .font(.system(size: 16, weight: .bold))
                 .foregroundColor(.white)
-                .frame(width: 38, height: 38)
+                .frame(width: 34, height: 34)
                 .background(Color.black.opacity(0.5))
                 .clipShape(Circle())
         }
     }
 
     private var bars: some View {
-        VStack(spacing: 4) {
+        VStack(alignment: .leading, spacing: 3) {
             HStack {
-                Text("HP").font(.caption.bold()).foregroundColor(.white)
-                ProgressView(value: max(0, game.hp), total: 100).tint(.green)
+                Text("HP").font(.caption2.bold()).foregroundColor(.white)
+                ProgressView(value: max(0, min(100, game.hp)), total: 100).tint(.green)
             }
-            HStack {
-                Text(game.phaseText).font(.caption.bold()).foregroundColor(.white)
-                ProgressView(value: max(0, game.bossFrac), total: 1).tint(.red)
+            Text(game.phaseText).font(.caption2.bold()).foregroundColor(.white)
+            if game.showBoss {
+                ProgressView(value: max(0, min(1, game.bossFrac)), total: 1).tint(.red)
+            }
+            if game.combo > 1 {
+                Text("COMBO x\(game.combo)").font(.caption.bold()).foregroundColor(.yellow)
             }
         }
-        .padding(8)
+        .padding(6)
         .background(Color.black.opacity(0.45))
-        .cornerRadius(10)
+        .cornerRadius(8)
     }
 
     private func pill(_ t: String, _ c: Color, _ f: @escaping () -> Void) -> some View {
         Button(action: f) {
             Text(t)
-                .font(.subheadline.bold())
+                .font(.footnote.bold())
                 .foregroundColor(.white)
-                .padding(.horizontal, 18)
-                .padding(.vertical, 12)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 11)
                 .background(c)
                 .clipShape(Capsule())
+        }
+    }
+
+    private var actionButtons: some View {
+        VStack(alignment: .trailing, spacing: 6) {
+            HStack(spacing: 6) {
+                if game.geassReady {
+                    pill("GEASS", .purple) { game.useGeass() }
+                }
+                pill("DODGE", .gray) { game.dodge() }
+            }
+            HStack(spacing: 6) {
+                pill("HEAVY", .red) { game.attack(heavy: true) }
+                pill("LIGHT", .orange) { game.attack(heavy: false) }
+            }
         }
     }
 
     @ViewBuilder private var bottom: some View {
         switch game.phase {
         case .travel:
-            VStack(spacing: 10) {
-                panel { Text(game.caption).font(.footnote) }
-                HStack {
-                    GeassJoystick { game.joy = $0 }
-                    Spacer()
-                }
+            HStack(alignment: .bottom, spacing: 12) {
+                GeassJoystick { game.joy = $0 }
+                panel { Text(game.caption).font(.caption) }
+                if game.inAction { actionButtons }
             }
         case .dialogue:
-            VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .bottom, spacing: 12) {
                 panel {
-                    VStack(alignment: .leading, spacing: 4) {
+                    VStack(alignment: .leading, spacing: 3) {
                         Text(game.speaker).font(.subheadline).bold()
-                        Text(game.caption).font(.body)
+                        Text(game.caption).font(.callout)
                     }
                 }
                 pill("Next", .blue) { game.next() }
             }
         case .fight:
-            if game.combatMode {
-                VStack(spacing: 8) {
-                    panel { Text(game.caption).font(.footnote) }
-                    HStack(alignment: .bottom) {
-                        GeassJoystick { game.joy = $0 }
-                        Spacer()
-                        VStack(spacing: 8) {
-                            if game.geassReady {
-                                pill("GEASS", .purple) { game.useGeass() }
-                            }
-                            HStack(spacing: 8) {
-                                pill("DODGE", .gray) { game.dodge() }
-                                pill("LIGHT", .orange) { game.attack(heavy: false) }
-                            }
-                            pill("HEAVY", .red) { game.attack(heavy: true) }
-                        }
-                    }
+            if !game.keyLabel.isEmpty {
+                HStack(alignment: .bottom, spacing: 12) {
+                    panel { Text(game.caption).font(.caption) }
+                    pill(game.keyLabel, .red) { game.pressKey() }
                 }
             } else {
-                VStack(spacing: 8) {
-                    panel { Text(game.caption).font(.footnote) }
-                    if !game.keyLabel.isEmpty {
-                        pill(game.keyLabel, .red) { game.pressKey() }
-                    }
+                HStack(alignment: .bottom, spacing: 12) {
+                    GeassJoystick { game.joy = $0 }
+                    panel { Text(game.caption).font(.caption) }
+                    if game.inAction { actionButtons }
                 }
             }
         case .vision:
-            panel { Text(game.caption).font(.footnote).italic() }
+            panel { Text(game.caption).font(.caption).italic() }
         case .finished:
-            VStack(spacing: 8) {
-                panel { Text("THE END").font(.title).bold() }
+            HStack(alignment: .bottom, spacing: 12) {
+                panel { Text("THE END").font(.title2).bold() }
                 pill("Play again", .blue) { game.skip() }
             }
         }
@@ -8083,9 +8590,9 @@ struct GeassGameView: View {
     private func panel<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
         content()
             .foregroundColor(.white)
-            .padding(12)
+            .padding(10)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(Color.black.opacity(0.6))
-            .cornerRadius(12)
+            .cornerRadius(10)
     }
 }
